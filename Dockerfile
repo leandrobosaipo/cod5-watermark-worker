@@ -26,15 +26,18 @@ RUN pip install --no-cache-dir --force-reinstall --no-deps ultralytics==8.0.0
 
 # Verifica se C3k2 está disponível (validação crítica)
 # Tenta múltiplas versões até encontrar uma com C3k2
+# Nota: Se nenhuma versão tiver C3k2, pode ser necessário reexportar o modelo
 RUN python3 check_c3k2.py && echo "✓ C3k2 found in 8.0.0" || \
     (echo "⚠ C3k2 not found in 8.0.0, trying 8.0.100..." && \
      pip install --no-cache-dir --force-reinstall ultralytics==8.0.100 && \
      python3 check_c3k2.py && echo "✓ C3k2 found in 8.0.100" || \
-     (echo "⚠ C3k2 not found in 8.0.100, trying 7.0.0..." && \
-      pip install --no-cache-dir --force-reinstall ultralytics==7.0.0 && \
-      python3 check_c3k2.py && echo "✓ C3k2 found in 7.0.0" || \
-      (echo "❌ ERROR: C3k2 not found in any tested version!" && \
-       echo "Tried: 8.0.0, 8.0.100, 7.0.0" && \
+     (echo "⚠ C3k2 not found in 8.0.100, trying 8.0.20..." && \
+      pip install --no-cache-dir --force-reinstall ultralytics==8.0.20 && \
+      python3 check_c3k2.py && echo "✓ C3k2 found in 8.0.20" || \
+      (echo "⚠ C3k2 not found in any tested version!" && \
+       echo "Tried: 8.0.0, 8.0.100, 8.0.20" && \
+       echo "WARNING: Modelo best.pt pode precisar ser reexportado com versão atual" && \
+       echo "OU pode ser necessário usar uma versão customizada do ultralytics" && \
        exit 1)))
 
 # YOLO weights

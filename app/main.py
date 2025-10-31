@@ -292,7 +292,7 @@ async def startup_event():
                 f"ERRO CRÍTICO: Módulo C3k2 não encontrado no ultralytics!\n"
                 f"Versão instalada: {uv_version}\n"
                 f"O modelo best.pt requer uma versão do ultralytics com C3k2.\n"
-                f"Teste versões: 8.0.0, 8.0.100, 7.0.0"
+                f"Teste versões: 8.0.0, 8.0.100, 8.0.20, 8.0.10"
             )
             logger.error(error_msg)
             raise RuntimeError(error_msg)

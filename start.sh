@@ -27,7 +27,7 @@ if [ $? -ne 0 ] || [ -z "$C3K2_AVAILABLE" ]; then
     echo "==> Trying alternative versions..."
     
     # Tenta versões alternativas
-    for version in "8.0.100" "8.0.0" "7.0.0"; do
+    for version in "8.0.100" "8.0.20" "8.0.10"; do
         echo "==> Attempting ultralytics==$version..."
         pip install --no-cache-dir --force-reinstall ultralytics==$version
         if python3 -c "from ultralytics.nn.modules.block import C3k2" 2>/dev/null; then

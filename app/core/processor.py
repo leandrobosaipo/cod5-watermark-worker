@@ -55,7 +55,7 @@ def get_yolo_model() -> YOLO:
                     f"Soluções possíveis:\n"
                     f"1. Reconstrua com Dockerfile atualizado (testa múltiplas versões)\n"
                     f"2. O start.sh tentará versões alternativas automaticamente\n"
-                    f"3. Versões a testar: 8.0.0, 8.0.100, 7.0.0"
+                    f"3. Versões a testar: 8.0.0, 8.0.100, 8.0.20, 8.0.10"
                 )
                 logger.error(error_msg)
                 raise RuntimeError(error_msg) from e
