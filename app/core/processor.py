@@ -303,8 +303,14 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
         # Configurações efetivas
         conf = settings.validate_yolo_conf(params.get('override_conf'))
         iou = settings.validate_yolo_iou()
-        mask_expand = params.get('override_mask_expand', settings.MASK_EXPAND)
-        frame_stride = max(1, params.get('override_frame_stride', settings.FRAME_STRIDE))
+        # Garante que mask_expand não seja None ou 0 quando não especificado
+        override_mask_expand = params.get('override_mask_expand')
+        mask_expand = override_mask_expand if override_mask_expand is not None else settings.MASK_EXPAND
+        # Valida que mask_expand seja um número positivo
+        mask_expand = max(0, int(mask_expand)) if mask_expand is not None else settings.MASK_EXPAND
+        
+        override_frame_stride = params.get('override_frame_stride')
+        frame_stride = max(1, int(override_frame_stride)) if override_frame_stride is not None else settings.FRAME_STRIDE
         device = settings.validate_device()
         
         logger.info(
@@ -516,16 +522,30 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             # Webhook (opcional)
             webhook_url = params.get('webhook_url')
             if webhook_url:
-                try:
-                    import requests
-                    status = status_manager.get(task_id)
-                    requests.post(
-                        webhook_url,
-                        json=status.to_dict() if status else {},
-                        timeout=10
-                    )
-                except Exception as e:
-                    logger.error(f"Erro ao chamar webhook: {e}")
+                # Valida que webhook_url seja uma string válida e uma URL válida
+                if isinstance(webhook_url, str) and webhook_url.strip() and webhook_url.lower() != 'string':
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(webhook_url.strip())
+                        if not parsed.scheme or not parsed.netloc:
+                            logger.warning(f"⚠️  WEBHOOK: URL inválida ignorada | URL: {webhook_url} | task_id={task_id}")
+                        else:
+                            try:
+                                import requests
+                                status = status_manager.get(task_id)
+                                logger.info(f"📡 WEBHOOK: Enviando webhook | URL: {webhook_url} | task_id={task_id}")
+                                response = requests.post(
+                                    webhook_url.strip(),
+                                    json=status.to_dict() if status else {},
+                                    timeout=10
+                                )
+                                logger.info(f"✅ WEBHOOK: Webhook enviado | Status: {response.status_code} | task_id={task_id}")
+                            except Exception as e:
+                                logger.error(f"❌ WEBHOOK: Erro ao chamar webhook | URL: {webhook_url} | Erro: {e} | task_id={task_id}")
+                    except Exception as e:
+                        logger.warning(f"⚠️  WEBHOOK: Erro ao validar URL | URL: {webhook_url} | Erro: {e} | task_id={task_id}")
+                else:
+                    logger.warning(f"⚠️  WEBHOOK: URL inválida ou vazia ignorada | URL: {webhook_url} | task_id={task_id}")
             
             return {
                 "success": True,
@@ -552,16 +572,23 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
         
         # Webhook de erro (opcional)
         webhook_url = params.get('webhook_url')
-        if webhook_url:
+        if webhook_url and isinstance(webhook_url, str) and webhook_url.strip() and webhook_url.lower() != 'string':
             try:
-                import requests
-                status = status_manager.get(task_id)
-                requests.post(
-                    webhook_url,
-                    json=status.to_dict() if status else {},
-                    timeout=10
-                )
-            except:
+                from urllib.parse import urlparse
+                parsed = urlparse(webhook_url.strip())
+                if parsed.scheme and parsed.netloc:
+                    try:
+                        import requests
+                        status = status_manager.get(task_id)
+                        logger.info(f"📡 WEBHOOK: Enviando webhook de erro | URL: {webhook_url} | task_id={task_id}")
+                        requests.post(
+                            webhook_url.strip(),
+                            json=status.to_dict() if status else {},
+                            timeout=10
+                        )
+                    except Exception as e:
+                        logger.error(f"❌ WEBHOOK: Erro ao chamar webhook de erro | Erro: {e} | task_id={task_id}")
+            except Exception:
                 pass
         
         raise

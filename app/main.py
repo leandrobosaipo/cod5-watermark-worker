@@ -149,18 +149,33 @@ async def submit_remove_task(
             logger.info(f"📊 STATUS: Status inicial criado | task_id={task_id} | status=queued")
             
             # Parâmetros do processamento
+            # Valida e sanitiza webhook_url
+            validated_webhook = None
+            if webhook_url:
+                webhook_url_clean = webhook_url.strip() if isinstance(webhook_url, str) else None
+                if webhook_url_clean and webhook_url_clean.lower() != 'string' and len(webhook_url_clean) > 10:
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(webhook_url_clean)
+                        if parsed.scheme and parsed.netloc:
+                            validated_webhook = webhook_url_clean
+                        else:
+                            logger.warning(f"⚠️  WEBHOOK: URL inválida ignorada | URL: {webhook_url} | task_id={task_id}")
+                    except Exception as e:
+                        logger.warning(f"⚠️  WEBHOOK: Erro ao validar URL | URL: {webhook_url} | Erro: {e} | task_id={task_id}")
+            
             params = {
                 "override_conf": override_conf,
-                "override_mask_expand": override_mask_expand,
-                "override_frame_stride": override_frame_stride,
-                "webhook_url": webhook_url
+                "override_mask_expand": override_mask_expand if override_mask_expand is not None else None,
+                "override_frame_stride": override_frame_stride if override_frame_stride is not None else None,
+                "webhook_url": validated_webhook
             }
             logger.info(
                 f"⚙️  PARAMS: Parâmetros configurados | "
-                f"conf={override_conf or 'default'} | "
-                f"mask_expand={override_mask_expand or 'default'} | "
-                f"stride={override_frame_stride or 'default'} | "
-                f"webhook={'sim' if webhook_url else 'não'} | "
+                f"conf={override_conf if override_conf is not None else 'default'} | "
+                f"mask_expand={override_mask_expand if override_mask_expand is not None else 'default'} | "
+                f"stride={override_frame_stride if override_frame_stride is not None else 'default'} | "
+                f"webhook={'sim' if validated_webhook else 'não'} | "
                 f"task_id={task_id}"
             )
             
@@ -216,18 +231,35 @@ async def download_task(task_id: str):
     Args:
         task_id: ID da tarefa
     """
+    logger.info(f"📥 DOWNLOAD: Requisição de download | task_id={task_id}")
+    
     status = status_manager.get(task_id)
     
     if not status:
+        logger.warning(f"⚠️  DOWNLOAD: Tarefa não encontrada | task_id={task_id}")
         raise HTTPException(status_code=404, detail=f"Tarefa {task_id} não encontrada")
     
-    if status.status != "completed" or not status.spaces_output:
+    logger.info(f"   Status da tarefa: {status.status} | Output: {'sim' if status.spaces_output else 'não'}")
+    
+    if status.status != "completed":
+        logger.warning(
+            f"⚠️  DOWNLOAD: Vídeo não está pronto | "
+            f"Status: {status.status} | Progress: {status.progress}% | task_id={task_id}"
+        )
         raise HTTPException(
             status_code=400,
-            detail=f"Vídeo ainda não está pronto (status: {status.status})"
+            detail=f"Vídeo ainda não está pronto. Status: {status.status}, Progresso: {status.progress}%"
+        )
+    
+    if not status.spaces_output:
+        logger.error(f"❌ DOWNLOAD: URL de output não encontrada | task_id={task_id}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"URL do vídeo processado não encontrada. Status: {status.status}"
         )
     
     # Redireciona para URL pública do Spaces
+    logger.info(f"✅ DOWNLOAD: Redirecionando para vídeo | URL: {status.spaces_output} | task_id={task_id}")
     return RedirectResponse(url=status.spaces_output, status_code=302)
 
 
