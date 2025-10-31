@@ -29,21 +29,41 @@ def get_yolo_model() -> YOLO:
             raise FileNotFoundError(f"Modelo YOLO não encontrado: {model_path}")
         
         try:
+            # Verifica versão do ultralytics antes de carregar
+            import ultralytics
+            uv_version = ultralytics.__version__
+            logger.info(f"Carregando modelo YOLO com ultralytics {uv_version}")
+            
             # Tenta carregar o modelo
             _yolo_model = YOLO(model_path)
             logger.info(f"Modelo YOLO carregado com sucesso: {model_path}")
         except AttributeError as e:
             if 'C3k2' in str(e):
+                # Captura versão instalada para diagnóstico
+                try:
+                    import ultralytics
+                    installed_version = ultralytics.__version__
+                except:
+                    installed_version = "desconhecida"
+                
                 error_msg = (
-                    f"Erro de compatibilidade: O modelo {model_path} requer uma versão "
-                    f"específica do ultralytics que tenha o módulo C3k2. "
-                    f"Verifique se ultralytics==8.0.196 está instalado. "
-                    f"Erro original: {e}"
+                    f"ERRO DE COMPATIBILIDADE C3k2:\n"
+                    f"O modelo {model_path} requer ultralytics==8.0.196 (com módulo C3k2).\n"
+                    f"Versão instalada: {installed_version}\n"
+                    f"Erro: {e}\n"
+                    f"Ação: Reconstrua o Docker image sem cache para garantir a versão correta."
                 )
                 logger.error(error_msg)
                 raise RuntimeError(error_msg) from e
             raise
         except Exception as e:
+            # Captura versão para diagnóstico
+            try:
+                import ultralytics
+                installed_version = ultralytics.__version__
+                logger.error(f"Versão ultralytics: {installed_version}")
+            except:
+                pass
             logger.error(f"Erro ao carregar modelo YOLO: {e}")
             raise
     

@@ -7,6 +7,27 @@ echo "==> COD5 Watermark Worker Starting..."
 echo "==> Python version: $(python3 --version)"
 echo "==> Working directory: $(pwd)"
 
+# Validação crítica: verifica versão do ultralytics
+echo "==> Validating ultralytics version..."
+ULTRALYTICS_VERSION=$(python3 -c "import ultralytics; print(ultralytics.__version__)" 2>/dev/null)
+if [ $? -ne 0 ] || [ -z "$ULTRALYTICS_VERSION" ]; then
+    echo "==> ERROR: Failed to import ultralytics"
+    exit 1
+fi
+
+echo "==> Ultralytics version: $ULTRALYTICS_VERSION"
+
+if [[ ! "$ULTRALYTICS_VERSION" =~ ^8\.0\.196 ]]; then
+    echo "==> ERROR: Ultralytics version mismatch!"
+    echo "==> Expected: 8.0.196"
+    echo "==> Got: $ULTRALYTICS_VERSION"
+    echo "==> This will cause C3k2 compatibility errors."
+    echo "==> Please rebuild the Docker image without cache."
+    exit 1
+fi
+
+echo "==> ✓ Ultralytics version OK"
+
 echo "==> Applying .env (if present)"
 
 if [ -f .env ]; then

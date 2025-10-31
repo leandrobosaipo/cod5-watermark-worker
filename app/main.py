@@ -276,6 +276,30 @@ async def healthz():
 async def startup_event():
     """Inicializa aplicação."""
     logger.info("Iniciando COD5 Watermark Worker...")
+    
+    # Validação crítica: versão do ultralytics
+    try:
+        import ultralytics
+        uv_version = ultralytics.__version__
+        logger.info(f"Ultralytics version: {uv_version}")
+        
+        if not uv_version.startswith('8.0.196'):
+            error_msg = (
+                f"ERRO CRÍTICO: Versão incorreta do ultralytics instalada!\n"
+                f"Esperado: 8.0.196\n"
+                f"Encontrado: {uv_version}\n"
+                f"Isso causará erro C3k2 ao carregar o modelo YOLO.\n"
+                f"Reconstrua o Docker image sem cache: docker build --no-cache ."
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        logger.info("✓ Validação de versão ultralytics OK")
+    except ImportError as e:
+        error_msg = f"ERRO: Não foi possível importar ultralytics: {e}"
+        logger.error(error_msg)
+        raise RuntimeError(error_msg) from e
+    
     logger.info(f"Device: {settings.validate_device()}")
     logger.info(f"Queue backend: {settings.QUEUE_BACKEND or 'ThreadPool (fallback)'}")
     
