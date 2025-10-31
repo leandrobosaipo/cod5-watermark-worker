@@ -6,13 +6,11 @@ opencv-python==4.10.0.84
 numpy==1.26.4
 pillow==10.4.0
 ffmpeg-python==0.2.0
-# ultralytics: Versão fixada para compatibilidade com modelo best.pt (C3k2)
+# ultralytics: Tenta múltiplas versões para encontrar uma com C3k2
 # O modelo do SoraWatermarkCleaner requer versão com módulo C3k2
-# Versões alternativas se 8.0.196 não funcionar:
-# - ultralytics==8.0.0
-# - ultralytics==8.0.100
-# - ultralytics==8.1.0 (verificar se tem C3k2)
-ultralytics==8.0.196
+# VERSÃO ATUAL: 8.0.0 (mais antiga da série 8.x, mais provável de ter C3k2)
+# Se não funcionar, tentar: 8.0.100, 8.0.196, 7.0.x
+ultralytics==8.0.0
 requests==2.32.3
 tqdm==4.66.5
 boto3==1.35.20

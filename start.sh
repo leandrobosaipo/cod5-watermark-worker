@@ -17,13 +17,31 @@ fi
 
 echo "==> Ultralytics version: $ULTRALYTICS_VERSION"
 
-if [[ ! "$ULTRALYTICS_VERSION" =~ ^8\.0\.196 ]]; then
-    echo "==> ERROR: Ultralytics version mismatch!"
-    echo "==> Expected: 8.0.196"
-    echo "==> Got: $ULTRALYTICS_VERSION"
-    echo "==> This will cause C3k2 compatibility errors."
-    echo "==> Please rebuild the Docker image without cache."
-    exit 1
+# Verifica se C3k2 está disponível (mais importante que a versão exata)
+C3K2_AVAILABLE=$(python3 -c "from ultralytics.nn.modules.block import C3k2; print('OK')" 2>/dev/null)
+
+if [ $? -ne 0 ] || [ -z "$C3K2_AVAILABLE" ]; then
+    echo "==> ERROR: C3k2 module not found in ultralytics!"
+    echo "==> Version: $ULTRALYTICS_VERSION"
+    echo "==> This model requires a version with C3k2 module."
+    echo "==> Trying alternative versions..."
+    
+    # Tenta versões alternativas
+    for version in "8.0.100" "8.0.0" "7.0.0"; do
+        echo "==> Attempting ultralytics==$version..."
+        pip install --no-cache-dir --force-reinstall ultralytics==$version
+        if python3 -c "from ultralytics.nn.modules.block import C3k2" 2>/dev/null; then
+            echo "==> ✓ Found C3k2 with ultralytics==$version"
+            ULTRALYTICS_VERSION=$(python3 -c "import ultralytics; print(ultralytics.__version__)")
+            break
+        fi
+    done
+    
+    # Verifica novamente
+    if ! python3 -c "from ultralytics.nn.modules.block import C3k2" 2>/dev/null; then
+        echo "==> ERROR: Could not find C3k2 in any tested version!"
+        exit 1
+    fi
 fi
 
 echo "==> ✓ Ultralytics version OK"

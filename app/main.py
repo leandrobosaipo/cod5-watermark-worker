@@ -283,13 +283,16 @@ async def startup_event():
         uv_version = ultralytics.__version__
         logger.info(f"Ultralytics version: {uv_version}")
         
-        if not uv_version.startswith('8.0.196'):
+        # Verifica se C3k2 está disponível (mais importante que versão exata)
+        try:
+            from ultralytics.nn.modules.block import C3k2
+            logger.info("✓ Módulo C3k2 encontrado no ultralytics")
+        except ImportError:
             error_msg = (
-                f"ERRO CRÍTICO: Versão incorreta do ultralytics instalada!\n"
-                f"Esperado: 8.0.196\n"
-                f"Encontrado: {uv_version}\n"
-                f"Isso causará erro C3k2 ao carregar o modelo YOLO.\n"
-                f"Reconstrua o Docker image sem cache: docker build --no-cache ."
+                f"ERRO CRÍTICO: Módulo C3k2 não encontrado no ultralytics!\n"
+                f"Versão instalada: {uv_version}\n"
+                f"O modelo best.pt requer uma versão do ultralytics com C3k2.\n"
+                f"Teste versões: 8.0.0, 8.0.100, 7.0.0"
             )
             logger.error(error_msg)
             raise RuntimeError(error_msg)

@@ -48,10 +48,14 @@ def get_yolo_model() -> YOLO:
                 
                 error_msg = (
                     f"ERRO DE COMPATIBILIDADE C3k2:\n"
-                    f"O modelo {model_path} requer ultralytics==8.0.196 (com módulo C3k2).\n"
+                    f"O modelo {model_path} requer uma versão do ultralytics com módulo C3k2.\n"
                     f"Versão instalada: {installed_version}\n"
+                    f"Esta versão NÃO tem o módulo C3k2 necessário.\n"
                     f"Erro: {e}\n"
-                    f"Ação: Reconstrua o Docker image sem cache para garantir a versão correta."
+                    f"Soluções possíveis:\n"
+                    f"1. Reconstrua com Dockerfile atualizado (testa múltiplas versões)\n"
+                    f"2. O start.sh tentará versões alternativas automaticamente\n"
+                    f"3. Versões a testar: 8.0.0, 8.0.100, 7.0.0"
                 )
                 logger.error(error_msg)
                 raise RuntimeError(error_msg) from e
