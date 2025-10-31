@@ -6,11 +6,11 @@ opencv-python==4.10.0.84
 numpy==1.26.4
 pillow==10.4.0
 ffmpeg-python==0.2.0
-# ultralytics: Tenta múltiplas versões para encontrar uma com C3k2
-# O modelo do SoraWatermarkCleaner requer versão com módulo C3k2
-# VERSÃO ATUAL: 8.0.0 (mais antiga da série 8.x, mais provável de ter C3k2)
-# Se não funcionar, tentar: 8.0.100, 8.0.196, 7.0.x
-ultralytics==8.0.0
+# ultralytics: Versão flexível - o Dockerfile testa múltiplas versões automaticamente
+# O Dockerfile tentará versões na seguinte ordem até encontrar uma compatível:
+# 8.0.196, 8.1.0, 8.0.100, 8.0.20, 8.0.0, 7.1.0
+# Esta versão é apenas um fallback inicial - será substituída durante o build
+ultralytics>=8.0.0,<9.0.0
 requests==2.32.3
 tqdm==4.66.5
 boto3==1.35.20

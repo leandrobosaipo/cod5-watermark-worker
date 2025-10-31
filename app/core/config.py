@@ -49,11 +49,50 @@ class Settings(BaseSettings):
         case_sensitive = True
 
     def validate_device(self) -> str:
-        """Valida e retorna device válido."""
+        """
+        Valida e retorna device válido, verificando disponibilidade real.
+        MPS só funciona no macOS, CUDA requer GPU NVIDIA.
+        """
         device = self.TORCH_DEVICE.lower()
+        
+        # Valida formato básico
         if device not in ["cpu", "mps", "cuda"]:
             return "cpu"
-        return device
+        
+        # Verifica disponibilidade real
+        try:
+            import torch
+            
+            if device == "mps":
+                # MPS só funciona no macOS/Apple Silicon
+                if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    return "mps"
+                else:
+                    import logging
+                    logging.warning(
+                        "TORCH_DEVICE=mps configurado, mas MPS não está disponível "
+                        "(requer macOS com Apple Silicon). Usando CPU."
+                    )
+                    return "cpu"
+            
+            elif device == "cuda":
+                # CUDA requer GPU NVIDIA
+                if torch.cuda.is_available():
+                    return "cuda"
+                else:
+                    import logging
+                    logging.warning(
+                        "TORCH_DEVICE=cuda configurado, mas CUDA não está disponível "
+                        "(requer GPU NVIDIA). Usando CPU."
+                    )
+                    return "cpu"
+            
+            # CPU sempre disponível
+            return "cpu"
+            
+        except ImportError:
+            # Se torch não estiver disponível, retorna CPU (será erro depois)
+            return device if device == "cpu" else "cpu"
     
     def validate_yolo_conf(self, value: Optional[float] = None) -> float:
         """Valida YOLO confidence."""

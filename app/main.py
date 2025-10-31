@@ -8,6 +8,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 import tempfile
 
 from .core.config import settings
+from .core.storage import storage
 from .core.utils import (
     generate_task_id,
     generate_request_id,
@@ -19,12 +20,19 @@ from .core.status import status_manager
 from .core.queue import enqueue_video_processing
 from .core.processor import process_video
 
-# Configuração de logging
+# Configuração de logging detalhada e humanizada
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='[%(asctime)s] [%(levelname)8s] [%(name)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+# Configura logger específico da aplicação
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Logger para operações críticas
+critical_logger = logging.getLogger(f"{__name__}.critical")
 
 # FastAPI app
 app = FastAPI(
@@ -51,11 +59,30 @@ app.add_middleware(
 @app.middleware("http")
 async def add_request_id(request, call_next):
     """Adiciona request_id a todas as requisições."""
+    import time
     request_id = generate_request_id()
     request.state.request_id = request_id
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
+    start_time = time.time()
+    
+    # Log da requisição
+    logger.info(f"🔵 REQUEST [{request.method}] {request.url.path} | Request-ID: {request_id}")
+    
+    try:
+        response = await call_next(request)
+        duration = time.time() - start_time
+        logger.info(
+            f"🟢 RESPONSE [{request.method}] {request.url.path} | "
+            f"Status: {response.status_code} | Duration: {duration:.3f}s | Request-ID: {request_id}"
+        )
+        response.headers["X-Request-ID"] = request_id
+        return response
+    except Exception as e:
+        duration = time.time() - start_time
+        logger.error(
+            f"🔴 ERROR [{request.method}] {request.url.path} | "
+            f"Exception: {str(e)} | Duration: {duration:.3f}s | Request-ID: {request_id}"
+        )
+        raise
 
 
 @app.get("/")
@@ -87,11 +114,15 @@ async def submit_remove_task(
         - webhook_url: URL para POST ao concluir/erro
     """
     try:
+        logger.info("📤 RECEIVED: Upload de vídeo iniciado")
+        
         # Valida arquivo
         validate_file(file)
+        logger.info(f"✅ VALIDATION: Arquivo validado | Nome: {file.filename} | Tipo: {file.content_type}")
         
         # Gera task_id
         task_id = generate_task_id()
+        logger.info(f"🆔 TASK_CREATED: task_id={task_id}")
         
         # Salva arquivo temporariamente
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
@@ -101,8 +132,10 @@ async def submit_remove_task(
         
         try:
             # Upload para Spaces
+            logger.info(f"📤 UPLOAD: Iniciando upload para Spaces | task_id={task_id}")
             spaces_key = f"uploads/{task_id}.mp4"
             spaces_url = storage.upload_file(tmp_path, spaces_key)
+            logger.info(f"✅ UPLOAD: Vídeo enviado para Spaces | URL: {spaces_url} | task_id={task_id}")
             
             # Cria status inicial
             status_manager.create(
@@ -113,6 +146,7 @@ async def submit_remove_task(
                 spaces_input=spaces_url,
                 message="Video received. Processing will start soon."
             )
+            logger.info(f"📊 STATUS: Status inicial criado | task_id={task_id} | status=queued")
             
             # Parâmetros do processamento
             params = {
@@ -121,26 +155,40 @@ async def submit_remove_task(
                 "override_frame_stride": override_frame_stride,
                 "webhook_url": webhook_url
             }
+            logger.info(
+                f"⚙️  PARAMS: Parâmetros configurados | "
+                f"conf={override_conf or 'default'} | "
+                f"mask_expand={override_mask_expand or 'default'} | "
+                f"stride={override_frame_stride or 'default'} | "
+                f"webhook={'sim' if webhook_url else 'não'} | "
+                f"task_id={task_id}"
+            )
             
             # Enfileira tarefa (Celery ou fallback ThreadPool)
             enqueue_video_processing(task_id, spaces_key, params)
+            logger.info(f"🔄 QUEUE: Tarefa enfileirada | task_id={task_id}")
             
-            return {
+            result = {
                 "task_id": task_id,
                 "status": "queued",
                 "message": "Video received. Processing will start soon.",
                 "spaces_input": spaces_url
             }
+            logger.info(f"✅ SUCCESS: Upload concluído com sucesso | task_id={task_id}")
+            return result
         
         finally:
             # Remove arquivo temporário
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
+                logger.debug(f"🗑️  CLEANUP: Arquivo temporário removido | path={tmp_path}")
     
-    except HTTPException:
+    except HTTPException as e:
+        logger.warning(f"⚠️  HTTP_ERROR: {e.status_code} | Detail: {e.detail}")
         raise
     except Exception as e:
-        logger.exception(f"Erro ao processar upload: {e}")
+        logger.error(f"🔴 ERROR: Erro ao processar upload | Exception: {type(e).__name__} | {str(e)}")
+        logger.exception("Stack trace completo:")
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
 
@@ -275,45 +323,123 @@ async def healthz():
 @app.on_event("startup")
 async def startup_event():
     """Inicializa aplicação."""
-    logger.info("Iniciando COD5 Watermark Worker...")
+    logger.info("=" * 80)
+    logger.info("🚀 STARTUP: Iniciando COD5 Watermark Worker...")
+    logger.info("=" * 80)
     
     # Validação crítica: versão do ultralytics
+    logger.info("📦 CHECKING: Validando biblioteca Ultralytics...")
     try:
         import ultralytics
         uv_version = ultralytics.__version__
-        logger.info(f"Ultralytics version: {uv_version}")
+        logger.info(f"✅ ULTRA: Ultralytics instalado | Versão: {uv_version}")
         
-        # Verifica se C3k2 está disponível (mais importante que versão exata)
+        # Verifica compatibilidade tentando importar YOLO e verificar estrutura
+        # Não verificamos C3k2 diretamente, deixamos o YOLO lidar com a compatibilidade
         try:
-            from ultralytics.nn.modules.block import C3k2
-            logger.info("✓ Módulo C3k2 encontrado no ultralytics")
-        except ImportError:
-            error_msg = (
-                f"ERRO CRÍTICO: Módulo C3k2 não encontrado no ultralytics!\n"
-                f"Versão instalada: {uv_version}\n"
-                f"O modelo best.pt requer uma versão do ultralytics com C3k2.\n"
-                f"Teste versões: 8.0.0, 8.0.100, 8.0.20, 8.0.10"
-            )
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
+            from ultralytics import YOLO
+            logger.info("✅ YOLO: Módulo YOLO importável com sucesso")
+            
+            # Tentativa opcional de verificar C3k2 (não crítico)
+            try:
+                from ultralytics.nn.modules.block import C3k2
+                logger.info("✅ C3K2: Módulo C3k2 encontrado no ultralytics")
+            except (ImportError, AttributeError, ModuleNotFoundError):
+                logger.warning(
+                    "⚠️  C3K2: Módulo C3k2 não encontrado diretamente, mas YOLO está disponível. "
+                    "O modelo será testado durante o carregamento."
+                )
+        except ImportError as e:
+            error_msg = f"❌ ERRO: Não foi possível importar YOLO: {e}"
+            critical_logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
         
-        logger.info("✓ Validação de versão ultralytics OK")
+        logger.info("✅ ULTRA: Validação de versão ultralytics concluída com sucesso")
     except ImportError as e:
-        error_msg = f"ERRO: Não foi possível importar ultralytics: {e}"
-        logger.error(error_msg)
+        error_msg = f"❌ ERRO: Não foi possível importar ultralytics: {e}"
+        critical_logger.error(error_msg)
         raise RuntimeError(error_msg) from e
     
-    logger.info(f"Device: {settings.validate_device()}")
-    logger.info(f"Queue backend: {settings.QUEUE_BACKEND or 'ThreadPool (fallback)'}")
+    # Valida device e verifica disponibilidade real
+    logger.info("🎯 CHECKING: Validando dispositivo PyTorch...")
+    effective_device = settings.validate_device()
+    logger.info(f"✅ DEVICE: Device configurado: '{settings.TORCH_DEVICE}' | Device efetivo: '{effective_device}'")
+    if effective_device != settings.TORCH_DEVICE.lower():
+        logger.warning(
+            f"⚠️  DEVICE: Device ajustado automaticamente | "
+            f"Original: '{settings.TORCH_DEVICE}' → Efetivo: '{effective_device}' | "
+            f"Motivo: dispositivo solicitado não está disponível no sistema"
+        )
+    
+    # Valida conexão com Spaces
+    logger.info("☁️  CHECKING: Validando conexão com DigitalOcean Spaces...")
+    logger.info(f"   Configuração: Bucket={settings.SPACES_BUCKET} | Region={settings.SPACES_REGION} | Endpoint={settings.SPACES_ENDPOINT}")
+    try:
+        spaces_ok = storage.test_connection()
+        if not spaces_ok:
+            error_msg = "❌ ERRO: Não foi possível conectar ao DigitalOcean Spaces"
+            critical_logger.error(error_msg)
+            critical_logger.error("   Verifique: SPACES_KEY, SPACES_SECRET, SPACES_BUCKET e SPACES_ENDPOINT")
+            raise RuntimeError("Falha na conexão com Spaces")
+        logger.info("✅ SPACES: Conexão com DigitalOcean Spaces validada com sucesso")
+    except Exception as e:
+        error_msg = f"❌ ERRO: Falha ao validar Spaces | Exception: {type(e).__name__} | {str(e)}"
+        critical_logger.error(error_msg)
+        critical_logger.error("   Ação: Verifique as credenciais e configurações do Spaces")
+        raise RuntimeError(f"Falha na validação do Spaces: {e}") from e
+    
+    # Valida Redis se configurado
+    if settings.is_redis_enabled():
+        logger.info("🔄 CHECKING: Validando conexão com Redis...")
+        logger.info(f"   Configuração: {settings.QUEUE_BACKEND}")
+        try:
+            import redis
+            r = redis.from_url(settings.QUEUE_BACKEND, socket_connect_timeout=5)
+            r.ping()
+            logger.info("✅ REDIS: Conexão com Redis validada com sucesso")
+            logger.info(f"   Worker: Celery será usado com concurrency={settings.CELERY_CONCURRENCY}")
+        except Exception as e:
+            error_msg = f"❌ ERRO: Não foi possível conectar ao Redis | Exception: {type(e).__name__} | {str(e)}"
+            critical_logger.error(error_msg)
+            critical_logger.error("   Ação: Verifique QUEUE_BACKEND ou remova para usar fallback ThreadPool")
+            raise RuntimeError(f"Falha na conexão com Redis: {e}") from e
+    else:
+        logger.info("⚠️  QUEUE: Redis não configurado | Usando ThreadPool (fallback)")
+        logger.info(f"   Concurrency: {settings.CELERY_CONCURRENCY} workers")
+    
+    # Valida modelo YOLO existe
+    logger.info("🤖 CHECKING: Validando modelo YOLO...")
+    if not os.path.exists(settings.YOLO_MODEL_PATH):
+        error_msg = f"❌ ERRO: Modelo YOLO não encontrado | Path: {settings.YOLO_MODEL_PATH}"
+        critical_logger.error(error_msg)
+        raise FileNotFoundError(f"Modelo YOLO não encontrado: {settings.YOLO_MODEL_PATH}")
+    logger.info(f"✅ MODEL: Modelo YOLO encontrado | Path: {settings.YOLO_MODEL_PATH}")
+    
+    # Tenta pré-carregar modelo (opcional - não falha se der erro)
+    logger.info("🤖 LOADING: Tentando pré-carregar modelo YOLO (isso pode demorar alguns segundos)...")
+    try:
+        from .core.processor import get_yolo_model
+        model = get_yolo_model()
+        logger.info("✅ MODEL: Modelo YOLO pré-carregado com sucesso | Pronto para processar vídeos")
+    except Exception as e:
+        logger.warning(f"⚠️  MODEL: Não foi possível pré-carregar modelo YOLO | Exception: {type(e).__name__} | {str(e)}")
+        logger.warning("   O modelo será carregado na primeira requisição (pode causar delay)")
     
     # Limpeza inicial
+    logger.info("🧹 CLEANUP: Limpando tarefas antigas...")
     status_manager.cleanup_old()
-    logger.info("Limpeza de tarefas antigas concluída")
+    logger.info("✅ CLEANUP: Limpeza de tarefas antigas concluída")
+    
+    logger.info("=" * 80)
+    logger.info("✅ STARTUP: COD5 Watermark Worker iniciado com sucesso!")
+    logger.info("=" * 80)
 
 
 # Shutdown
 @app.on_event("shutdown")
 async def shutdown_event():
     """Finaliza aplicação."""
-    logger.info("Encerrando COD5 Watermark Worker...")
+    logger.info("=" * 80)
+    logger.info("🛑 SHUTDOWN: Encerrando COD5 Watermark Worker...")
+    logger.info("=" * 80)
 

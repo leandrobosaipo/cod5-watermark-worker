@@ -26,17 +26,18 @@ def get_yolo_model() -> YOLO:
     if _yolo_model is None:
         model_path = settings.YOLO_MODEL_PATH
         if not os.path.exists(model_path):
+            logger.error(f"❌ MODEL: Modelo YOLO não encontrado | Path: {model_path}")
             raise FileNotFoundError(f"Modelo YOLO não encontrado: {model_path}")
         
         try:
             # Verifica versão do ultralytics antes de carregar
             import ultralytics
             uv_version = ultralytics.__version__
-            logger.info(f"Carregando modelo YOLO com ultralytics {uv_version}")
+            logger.info(f"🤖 LOADING: Carregando modelo YOLO | Ultralytics: {uv_version} | Path: {model_path}")
             
             # Tenta carregar o modelo
             _yolo_model = YOLO(model_path)
-            logger.info(f"Modelo YOLO carregado com sucesso: {model_path}")
+            logger.info(f"✅ MODEL: Modelo YOLO carregado com sucesso | Path: {model_path}")
         except AttributeError as e:
             if 'C3k2' in str(e):
                 # Captura versão instalada para diagnóstico
@@ -281,7 +282,14 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
     Returns:
         Dict com resultados
     """
+    import time
+    start_time = time.time()
+    
     try:
+        logger.info("=" * 80)
+        logger.info(f"🎬 PROCESS: Iniciando processamento de vídeo | task_id={task_id}")
+        logger.info(f"   Spaces Key: {spaces_key}")
+        
         # Atualiza status: processing
         status_manager.update(
             task_id,
@@ -290,6 +298,7 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             progress=5,
             log_excerpt="Baixando vídeo do Spaces..."
         )
+        logger.info(f"📥 DOWNLOAD: Baixando vídeo do Spaces... | task_id={task_id}")
         
         # Configurações efetivas
         conf = settings.validate_yolo_conf(params.get('override_conf'))
@@ -297,6 +306,12 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
         mask_expand = params.get('override_mask_expand', settings.MASK_EXPAND)
         frame_stride = max(1, params.get('override_frame_stride', settings.FRAME_STRIDE))
         device = settings.validate_device()
+        
+        logger.info(
+            f"⚙️  CONFIG: Configurações de processamento | "
+            f"conf={conf} | iou={iou} | mask_expand={mask_expand} | "
+            f"frame_stride={frame_stride} | device={device} | task_id={task_id}"
+        )
         
         status_manager.update(
             task_id,
@@ -314,7 +329,10 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
         with tempfile.TemporaryDirectory() as temp_dir:
             # Download do Spaces
             local_video = os.path.join(temp_dir, f"{task_id}.mp4")
+            download_start = time.time()
             storage.download_file(spaces_key, local_video)
+            download_duration = time.time() - download_start
+            logger.info(f"✅ DOWNLOAD: Vídeo baixado | Duration: {download_duration:.2f}s | task_id={task_id}")
             
             # Extração de frames
             status_manager.update(
@@ -323,6 +341,7 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 progress=10,
                 log_excerpt="Extraindo frames do vídeo..."
             )
+            logger.info(f"🎞️  EXTRACT: Iniciando extração de frames... | task_id={task_id}")
             
             frames_dir = os.path.join(temp_dir, "frames")
             os.makedirs(frames_dir, exist_ok=True)
@@ -332,8 +351,16 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             probe = ffmpeg.probe(local_video)
             video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
             fps = eval(video_info['r_frame_rate'])
+            logger.info(f"📊 VIDEO_INFO: FPS detectado: {fps} | task_id={task_id}")
             
+            extract_start = time.time()
             total_frames, frame_files = extract_frames(local_video, frames_dir, stride=frame_stride)
+            extract_duration = time.time() - extract_start
+            logger.info(
+                f"✅ EXTRACT: Frames extraídos | "
+                f"Total: {total_frames} | Stride: {frame_stride} | "
+                f"Duration: {extract_duration:.2f}s | task_id={task_id}"
+            )
             status_manager.update(
                 task_id,
                 frames_total=total_frames,
@@ -342,6 +369,8 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 progress=15,
                 log_excerpt=f"Detectando marcas d'água em {total_frames} frames..."
             )
+            
+            logger.info(f"🔍 DETECT: Iniciando detecção de marcas d'água... | task_id={task_id}")
             
             # Processa cada frame
             processed_frames_dir = os.path.join(temp_dir, "processed_frames")
@@ -356,14 +385,27 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             if len(frame_files) > 2:
                 sample_indices.append(len(frame_files) - 1)
             
+            logger.info(f"   Amostragem: {len(sample_indices)} frames | Índices: {sample_indices} | task_id={task_id}")
+            
+            detect_start = time.time()
             for idx in sample_indices:
                 sample_frame = cv2.imread(frame_files[idx])
                 boxes = detect_watermarks(sample_frame, conf, iou, device)
                 all_boxes.extend(boxes)
+                logger.debug(f"   Frame {idx}: {len(boxes)} marca(s) detectada(s) | task_id={task_id}")
+            
+            detect_duration = time.time() - detect_start
+            total_detections = len(all_boxes)
             
             # Remove duplicatas próximas (merge de boxes similares)
             if not all_boxes:
-                logger.warning(f"Nenhuma marca d'água detectada nos frames de amostra")
+                logger.warning(f"⚠️  DETECT: Nenhuma marca d'água detectada nos frames de amostra | task_id={task_id}")
+            else:
+                logger.info(
+                    f"✅ DETECT: Detecção concluída | "
+                    f"Total de detecções: {total_detections} | "
+                    f"Duration: {detect_duration:.2f}s | task_id={task_id}"
+                )
             
             # Cria máscara base a partir de todas as detecções
             if all_boxes:
@@ -382,10 +424,13 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 log_excerpt="Aplicando inpainting nos frames..."
             )
             
+            logger.info(f"🎨 INPAINT: Iniciando inpainting em {len(frame_files)} frames... | task_id={task_id}")
+            inpaint_start = time.time()
+            
             for idx, frame_path in enumerate(frame_files):
                 frame = cv2.imread(frame_path)
                 if frame is None:
-                    logger.warning(f"Erro ao ler frame: {frame_path}")
+                    logger.warning(f"⚠️  INPAINT: Erro ao ler frame | Path: {frame_path} | task_id={task_id}")
                     continue
                 
                 # Aplica inpainting
@@ -395,14 +440,19 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 output_frame_path = os.path.join(processed_frames_dir, f"frame_{idx+1:06d}.png")
                 cv2.imwrite(output_frame_path, cleaned)
                 
-                # Atualiza progresso
-                progress = 20 + int((idx + 1) / len(frame_files) * 60)  # 20-80%
-                status_manager.update(
-                    task_id,
-                    frames_done=idx+1,
-                    progress=progress,
-                    log_excerpt=f"Frame {idx+1}/{len(frame_files)} processado..."
-                )
+                # Atualiza progresso a cada 10 frames ou no último
+                if (idx + 1) % 10 == 0 or (idx + 1) == len(frame_files):
+                    progress = 20 + int((idx + 1) / len(frame_files) * 60)  # 20-80%
+                    status_manager.update(
+                        task_id,
+                        frames_done=idx+1,
+                        progress=progress,
+                        log_excerpt=f"Frame {idx+1}/{len(frame_files)} processado..."
+                    )
+                    logger.info(f"   Progresso: {idx+1}/{len(frame_files)} frames ({progress}%) | task_id={task_id}")
+            
+            inpaint_duration = time.time() - inpaint_start
+            logger.info(f"✅ INPAINT: Inpainting concluído | Duration: {inpaint_duration:.2f}s | task_id={task_id}")
             
             # Renderização
             status_manager.update(
@@ -412,8 +462,18 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 log_excerpt="Renderizando vídeo final..."
             )
             
+            logger.info(f"🎬 RENDER: Iniciando renderização do vídeo final... | task_id={task_id}")
+            render_start = time.time()
+            
             output_video = os.path.join(temp_dir, f"{task_id}_clean.mp4")
             render_video(processed_frames_dir, output_video, audio_source=local_video, fps=fps)
+            
+            render_duration = time.time() - render_start
+            video_size_mb = os.path.getsize(output_video) / (1024 * 1024)
+            logger.info(
+                f"✅ RENDER: Vídeo renderizado | "
+                f"Size: {video_size_mb:.2f} MB | Duration: {render_duration:.2f}s | task_id={task_id}"
+            )
             
             # Upload para Spaces
             status_manager.update(
@@ -423,10 +483,20 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 log_excerpt="Enviando vídeo processado para Spaces..."
             )
             
+            logger.info(f"📤 UPLOAD: Enviando vídeo processado para Spaces... | task_id={task_id}")
+            upload_start = time.time()
+            
             output_key = f"outputs/{task_id}_clean.mp4"
             output_url = storage.upload_file(output_video, output_key)
             
+            upload_duration = time.time() - upload_start
+            logger.info(
+                f"✅ UPLOAD: Vídeo processado enviado | "
+                f"URL: {output_url} | Duration: {upload_duration:.2f}s | task_id={task_id}"
+            )
+            
             # Finaliza
+            total_duration = time.time() - start_time
             status_manager.update(
                 task_id,
                 status="completed",
@@ -436,6 +506,12 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 message="Watermark removed successfully",
                 log_excerpt="Processamento concluído!"
             )
+            
+            logger.info(
+                f"✅ SUCCESS: Processamento concluído com sucesso! | "
+                f"Total duration: {total_duration:.2f}s | task_id={task_id}"
+            )
+            logger.info("=" * 80)
             
             # Webhook (opcional)
             webhook_url = params.get('webhook_url')
@@ -458,7 +534,13 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             }
             
     except Exception as e:
-        logger.exception(f"Erro no processamento da tarefa {task_id}")
+        total_duration = time.time() - start_time if 'start_time' in locals() else 0
+        logger.error("=" * 80)
+        logger.error(f"❌ ERROR: Erro no processamento | task_id={task_id} | Duration: {total_duration:.2f}s")
+        logger.error(f"   Exception: {type(e).__name__} | {str(e)}")
+        logger.exception("   Stack trace completo:")
+        logger.error("=" * 80)
+        
         status_manager.update(
             task_id,
             status="error",
