@@ -1,5 +1,6 @@
 """Integração com DigitalOcean Spaces (S3 API)."""
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from pathlib import Path
 from typing import BinaryIO, Optional
@@ -15,13 +16,16 @@ class SpacesStorage:
     
     def __init__(self):
         """Inicializa cliente S3 compatível com Spaces."""
+        # Configuração para usar signature_version s3v4 (compatível com versões recentes do boto3)
+        s3_config = Config(signature_version='s3v4')
+        
         self.client = boto3.client(
             's3',
             endpoint_url=settings.SPACES_ENDPOINT,
             region_name=settings.SPACES_REGION,
             aws_access_key_id=settings.SPACES_KEY,
             aws_secret_access_key=settings.SPACES_SECRET,
-            signature_version='s3v4'
+            config=s3_config
         )
         self.bucket = settings.SPACES_BUCKET
     
