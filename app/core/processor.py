@@ -117,6 +117,7 @@ def extract_frames(video_path: str, output_dir: str, stride: int = 1) -> tuple[i
         (total_frames, lista_de_caminhos)
     """
     import ffmpeg
+    import subprocess
     
     # Obtém informações do vídeo
     probe = ffmpeg.probe(video_path)
@@ -132,17 +133,44 @@ def extract_frames(video_path: str, output_dir: str, stride: int = 1) -> tuple[i
     frame_pattern = os.path.join(output_dir, 'frame_%06d.png')
     
     # FFmpeg command
+    # Nota: O FFmpeg espera: select='not(mod(n\,5))' onde 5 é o stride
+    # O problema relatado: escapes duplos causam erro de parsing no FFmpeg
+    # Solução: usar apenas uma barra na string (Python \\ produz \ na string)
+    # mas o ffmpeg-python pode escapar novamente. Vamos usar uma string raw ou
+    # construir de forma que o resultado final tenha apenas uma barra
+    # Usa subprocess diretamente para evitar problemas de escape do ffmpeg-python
+    # O ffmpeg-python pode adicionar escapes extras ao passar filtros com vírgulas
+    
     try:
-        (
-            ffmpeg
-            .input(video_path)
-            .filter('select', f'not(mod(n\\,{stride}))')
-            .output(frame_pattern, **{'qscale:v': 2, 'vsync': 0})
-            .overwrite_output()
-            .run(quiet=True, capture_stderr=True)
+        # Constrói comando FFmpeg diretamente
+        cmd = ['ffmpeg', '-i', video_path, '-vsync', '0', '-qscale:v', '2']
+        
+        if stride > 1:
+            # Adiciona filtro select: select='not(mod(n\,{stride}))'
+            # Passamos a expressão diretamente ao FFmpeg, sem escapes extras
+            select_filter = f"select='not(mod(n\\,{stride}))'"
+            cmd.extend(['-vf', select_filter])
+        
+        cmd.extend(['-y', frame_pattern])  # -y para overwrite
+        
+        # Executa comando
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True
         )
-    except ffmpeg.Error as e:
-        logger.error(f"Erro FFmpeg ao extrair frames: {e.stderr.decode() if e.stderr else str(e)}")
+        
+        logger.debug(f"FFmpeg extraiu frames com sucesso (stride={stride})")
+            
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)
+        logger.error(f"Erro FFmpeg ao extrair frames: {error_msg}")
+        logger.error(f"Comando: {' '.join(cmd)}")
+        logger.error(f"Stride: {stride}")
+        raise RuntimeError(f"Falha ao extrair frames do vídeo: {error_msg}")
+    except Exception as e:
+        logger.error(f"Erro inesperado ao extrair frames: {e}")
         raise
     
     # Lista frames extraídos
