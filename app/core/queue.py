@@ -52,9 +52,41 @@ def get_fallback_executor() -> ThreadPoolExecutor:
         return _fallback_executor
 
 
+def enqueue_video_processing(task_id: str, spaces_key: str, params: Dict[str, Any]):
+    """
+    Enfileira processamento de vídeo usando Celery ou fallback.
+    
+    Args:
+        task_id: ID da tarefa
+        spaces_key: Chave do arquivo no Spaces
+        params: Parâmetros de processamento
+    
+    Returns:
+        Celery AsyncResult ou Future (fallback)
+    """
+    global celery_app
+    
+    # Tenta inicializar Celery na primeira chamada
+    if celery_app is None:
+        celery_app = init_celery()
+    
+    if celery_app is not None:
+        # Usa Celery - chama a task registrada
+        from .processor import process_video
+        # Usa apply_async para garantir que funcione
+        return celery_app.send_task(
+            'process_video_task',
+            args=(task_id, spaces_key, params)
+        )
+    else:
+        # Fallback: ThreadPoolExecutor
+        executor = get_fallback_executor()
+        return executor.submit(process_video_task, task_id, spaces_key, params)
+
+
 def enqueue_task(task_func, *args, **kwargs):
     """
-    Enfileira tarefa usando Celery ou fallback.
+    Enfileira tarefa genérica usando Celery ou fallback.
     
     Args:
         task_func: Função a executar
@@ -82,14 +114,18 @@ def enqueue_task(task_func, *args, **kwargs):
 # Inicializa Celery se possível
 celery_app = init_celery()
 
-# Task Celery (se disponível)
+
+# Task Celery (registrada sempre, mas só funciona se celery_app estiver ativo)
+def process_video_task(task_id: str, spaces_key: str, params: Dict[str, Any]):
+    """
+    Task Celery para processamento de vídeo.
+    Esta função será chamada pelo worker Celery.
+    """
+    from .processor import process_video
+    return process_video(task_id, spaces_key, params)
+
+
+# Registra task no Celery se disponível
 if celery_app is not None:
-    @celery_app.task(name='process_video_task')
-    def process_video_task(task_id: str, spaces_key: str, params: Dict[str, Any]):
-        """
-        Task Celery para processamento de vídeo.
-        Esta função será chamada pelo worker Celery.
-        """
-        from .processor import process_video
-        return process_video(task_id, spaces_key, params)
+    celery_app.task(name='process_video_task')(process_video_task)
 

@@ -16,7 +16,7 @@ from .core.utils import (
 )
 from .core.storage import storage
 from .core.status import status_manager
-from .core.queue import enqueue_task, process_video_task
+from .core.queue import enqueue_video_processing
 from .core.processor import process_video
 
 # Configuração de logging
@@ -122,16 +122,8 @@ async def submit_remove_task(
                 "webhook_url": webhook_url
             }
             
-            # Enfileira tarefa
-            if settings.is_redis_enabled():
-                # Celery
-                enqueue_task(process_video_task, task_id, spaces_key, params)
-            else:
-                # Fallback ThreadPool
-                def run_processing():
-                    process_video(task_id, spaces_key, params)
-                
-                enqueue_task(run_processing)
+            # Enfileira tarefa (Celery ou fallback ThreadPool)
+            enqueue_video_processing(task_id, spaces_key, params)
             
             return {
                 "task_id": task_id,

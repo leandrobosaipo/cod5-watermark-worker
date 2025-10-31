@@ -1,6 +1,15 @@
 """Configuração centralizada via variáveis de ambiente."""
-from pydantic_settings import BaseSettings
+import os
 from typing import Optional
+
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    # Fallback para versões mais antigas
+    try:
+        from pydantic import BaseSettings
+    except ImportError:
+        raise ImportError("pydantic-settings ou pydantic é necessário. Instale: pip install pydantic-settings")
 
 
 class Settings(BaseSettings):
@@ -36,6 +45,7 @@ class Settings(BaseSettings):
     
     class Config:
         env_file = ".env"
+        env_file_encoding = "utf-8"
         case_sensitive = True
 
     def validate_device(self) -> str:
