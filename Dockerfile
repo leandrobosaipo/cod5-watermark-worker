@@ -25,14 +25,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install --no-cache-dir --force-reinstall --no-deps ultralytics==8.0.0
 
 # Verifica se C3k2 está disponível (validação crítica)
-RUN python3 -c "import ultralytics; print('Ultralytics version:', ultralytics.__version__); from ultralytics.nn.modules.block import C3k2; print('✓ C3k2 module found!')" || \
+# Tenta múltiplas versões até encontrar uma com C3k2
+RUN python3 check_c3k2.py && echo "✓ C3k2 found in 8.0.0" || \
     (echo "⚠ C3k2 not found in 8.0.0, trying 8.0.100..." && \
      pip install --no-cache-dir --force-reinstall ultralytics==8.0.100 && \
-     python3 -c "import ultralytics; print('Ultralytics version:', ultralytics.__version__); from ultralytics.nn.modules.block import C3k2; print('✓ C3k2 module found!')" || \
+     python3 check_c3k2.py && echo "✓ C3k2 found in 8.0.100" || \
      (echo "⚠ C3k2 not found in 8.0.100, trying 7.0.0..." && \
       pip install --no-cache-dir --force-reinstall ultralytics==7.0.0 && \
-      python3 -c "import ultralytics; print('Ultralytics version:', ultralytics.__version__); from ultralytics.nn.modules.block import C3k2; print('✓ C3k2 module found!')" || \
-      (echo "❌ ERROR: C3k2 not found in any tested version!" && exit 1)))
+      python3 check_c3k2.py && echo "✓ C3k2 found in 7.0.0" || \
+      (echo "❌ ERROR: C3k2 not found in any tested version!" && \
+       echo "Tried: 8.0.0, 8.0.100, 7.0.0" && \
+       exit 1)))
 
 # YOLO weights
 RUN mkdir -p models && \
