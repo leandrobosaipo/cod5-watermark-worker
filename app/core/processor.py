@@ -27,8 +27,26 @@ def get_yolo_model() -> YOLO:
         model_path = settings.YOLO_MODEL_PATH
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Modelo YOLO não encontrado: {model_path}")
-        _yolo_model = YOLO(model_path)
-        logger.info(f"Modelo YOLO carregado: {model_path}")
+        
+        try:
+            # Tenta carregar o modelo
+            _yolo_model = YOLO(model_path)
+            logger.info(f"Modelo YOLO carregado com sucesso: {model_path}")
+        except AttributeError as e:
+            if 'C3k2' in str(e):
+                error_msg = (
+                    f"Erro de compatibilidade: O modelo {model_path} requer uma versão "
+                    f"específica do ultralytics que tenha o módulo C3k2. "
+                    f"Verifique se ultralytics==8.0.196 está instalado. "
+                    f"Erro original: {e}"
+                )
+                logger.error(error_msg)
+                raise RuntimeError(error_msg) from e
+            raise
+        except Exception as e:
+            logger.error(f"Erro ao carregar modelo YOLO: {e}")
+            raise
+    
     return _yolo_model
 
 
