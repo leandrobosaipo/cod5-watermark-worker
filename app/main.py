@@ -299,20 +299,21 @@ async def submit_remove_task(
             except Exception as e:
                 logger.warning(f"⚠️  METADATA: Erro ao capturar metadados do vídeo | Exception: {type(e).__name__} | {str(e)} | task_id={task_id}")
             
-            # Upload para Spaces
-            logger.info(f"📤 UPLOAD: Iniciando upload para Spaces | task_id={task_id}")
+            # Gera URL esperada (antes do upload real, será atualizada após upload assíncrono)
             spaces_key = f"uploads/{task_id}.mp4"
-            spaces_url = storage.upload_file(tmp_path, spaces_key)
-            logger.info(f"✅ UPLOAD: Vídeo enviado para Spaces | URL: {spaces_url} | task_id={task_id}")
+            # Construir URL esperada usando mesmo formato do storage
+            # Usa método privado _make_key para gerar a chave completa
+            full_key = f"{settings.SPACES_FOLDER_PREFIX}/{spaces_key}".replace("//", "/").lstrip("/")
+            expected_spaces_url = storage.public_url(full_key)
             
-            # Cria status inicial
+            # Cria status inicial sem spaces_input (será preenchido após upload assíncrono)
             status_manager.create(
                 task_id,
                 status="queued",
                 stage="uploading",
                 progress=0,
-                spaces_input=spaces_url,
-                message="Video received. Processing will start soon.",
+                spaces_input=None,  # Será atualizado após upload assíncrono
+                message="Video received. Uploading to Spaces...",
                 video_metadata=video_metadata
             )
             logger.info(f"📊 STATUS: Status inicial criado | task_id={task_id} | status=queued")
@@ -355,23 +356,29 @@ async def submit_remove_task(
             )
             
             # Enfileira tarefa (Celery ou fallback ThreadPool)
-            enqueue_video_processing(task_id, spaces_key, params)
+            # Passa caminho local do arquivo ao invés de spaces_key (upload será feito assincronamente)
+            enqueue_video_processing(task_id, tmp_path, spaces_key, params)
             logger.info(f"🔄 QUEUE: Tarefa enfileirada | task_id={task_id}")
             
             result = {
                 "task_id": task_id,
                 "status": "queued",
-                "message": "Video received. Processing will start soon.",
-                "spaces_input": spaces_url
+                "message": "Video received. Uploading to Spaces and processing will start soon.",
+                "spaces_input": expected_spaces_url  # URL esperada, será atualizada após upload assíncrono
             }
-            logger.info(f"✅ SUCCESS: Upload concluído com sucesso | task_id={task_id}")
+            logger.info(f"✅ SUCCESS: Upload recebido com sucesso | task_id={task_id} | Upload para Spaces será feito assincronamente")
             return result
         
-        finally:
-            # Remove arquivo temporário
+        except Exception as inner_e:
+            # Se houve erro antes de enfileirar, remove arquivo temporário
             if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-                logger.debug(f"🗑️  CLEANUP: Arquivo temporário removido | path={tmp_path}")
+                try:
+                    os.unlink(tmp_path)
+                    logger.debug(f"🗑️  CLEANUP: Arquivo temporário removido após erro | path={tmp_path}")
+                except:
+                    pass
+            raise inner_e
+        # NÃO remove arquivo temporário aqui se tudo deu certo - será removido após upload para Spaces no processamento assíncrono
     
     except HTTPException as e:
         logger.warning(f"⚠️  HTTP_ERROR: {e.status_code} | Detail: {e.detail}")

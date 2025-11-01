@@ -52,13 +52,14 @@ def get_fallback_executor() -> ThreadPoolExecutor:
         return _fallback_executor
 
 
-def enqueue_video_processing(task_id: str, spaces_key: str, params: Dict[str, Any]):
+def enqueue_video_processing(task_id: str, local_file_path: str, spaces_key: str, params: Dict[str, Any]):
     """
     Enfileira processamento de vídeo usando Celery ou fallback.
     
     Args:
         task_id: ID da tarefa
-        spaces_key: Chave do arquivo no Spaces
+        local_file_path: Caminho local do arquivo temporário (será usado para upload assíncrono)
+        spaces_key: Chave do arquivo no Spaces (onde será feito upload)
         params: Parâmetros de processamento
     
     Returns:
@@ -76,12 +77,12 @@ def enqueue_video_processing(task_id: str, spaces_key: str, params: Dict[str, An
         # Usa apply_async para garantir que funcione
         return celery_app.send_task(
             'process_video_task',
-            args=(task_id, spaces_key, params)
+            args=(task_id, local_file_path, spaces_key, params)
         )
     else:
         # Fallback: ThreadPoolExecutor
         executor = get_fallback_executor()
-        return executor.submit(process_video_task, task_id, spaces_key, params)
+        return executor.submit(process_video_task, task_id, local_file_path, spaces_key, params)
 
 
 def enqueue_task(task_func, *args, **kwargs):
@@ -116,13 +117,19 @@ celery_app = init_celery()
 
 
 # Task Celery (registrada sempre, mas só funciona se celery_app estiver ativo)
-def process_video_task(task_id: str, spaces_key: str, params: Dict[str, Any]):
+def process_video_task(task_id: str, local_file_path: str, spaces_key: str, params: Dict[str, Any]):
     """
     Task Celery para processamento de vídeo.
     Esta função será chamada pelo worker Celery.
+    
+    Args:
+        task_id: ID da tarefa
+        local_file_path: Caminho local do arquivo temporário
+        spaces_key: Chave do arquivo no Spaces
+        params: Parâmetros de processamento
     """
     from .processor import process_video
-    return process_video(task_id, spaces_key, params)
+    return process_video(task_id, local_file_path, spaces_key, params)
 
 
 # Registra task no Celery se disponível

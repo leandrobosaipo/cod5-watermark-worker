@@ -294,12 +294,13 @@ def render_video(
         raise
 
 
-def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def process_video(task_id: str, local_file_path: str, spaces_key: str, params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Pipeline completo de processamento de vídeo.
     
     Args:
         task_id: ID da tarefa
+        local_file_path: Caminho local do arquivo temporário (será usado para upload e processamento)
         spaces_key: Chave do vídeo no Spaces (uploads/task_id.mp4)
         params: Parâmetros (conf, mask_expand, frame_stride, webhook_url, etc.)
     
@@ -307,20 +308,45 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
         Dict com resultados
     """
     import time
+    import os
     start_time = time.time()
+    local_video = None
     
     try:
-        cod5_log("task.start", task_id=task_id, spaces_key=spaces_key)
+        cod5_log("task.start", task_id=task_id, spaces_key=spaces_key, local_file_path=local_file_path)
         
-        # Atualiza status: processing
+        # Primeiro passo: Upload para Spaces (assíncrono)
         status_manager.update(
             task_id,
             status="processing",
-            stage="downloading",
+            stage="uploading",
             progress=5,
-            log_excerpt="Baixando vídeo do Spaces..."
+            log_excerpt="Fazendo upload para Spaces..."
         )
-        cod5_log("task.download_start", task_id=task_id)
+        cod5_log("task.upload_start", task_id=task_id)
+        
+        upload_start = time.time()
+        spaces_url = storage.upload_file(local_file_path, spaces_key)
+        upload_duration = time.time() - upload_start
+        
+        # Atualiza status com spaces_input após upload bem-sucedido
+        status_manager.update(
+            task_id,
+            spaces_input=spaces_url,
+            log_excerpt="Upload para Spaces concluído. Iniciando processamento..."
+        )
+        cod5_log("task.upload_done", task_id=task_id, duration_s=upload_duration, spaces_url=spaces_url)
+        
+        # Verifica se arquivo local existe e é válido
+        if not os.path.exists(local_file_path):
+            raise FileNotFoundError(f"Arquivo temporário não encontrado: {local_file_path}")
+        
+        # Usa arquivo local diretamente (não precisa fazer download)
+        local_video = local_file_path
+        
+        performance_metrics = {
+            "upload_time": upload_duration
+        }
         
         # Configurações efetivas
         conf = settings.validate_yolo_conf(params.get('override_conf'))
@@ -378,19 +404,8 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             model_used="YOLOv11s + LAMA-big"
         )
         
-        # Cria diretórios temporários
+        # Cria diretórios temporários para processamento
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Download do Spaces
-            local_video = os.path.join(temp_dir, f"{task_id}.mp4")
-            download_start = time.time()
-            storage.download_file(spaces_key, local_video)
-            download_duration = time.time() - download_start
-            cod5_log("task.download_done", task_id=task_id, duration_s=download_duration)
-            
-            performance_metrics = {
-                "download_time": download_duration
-            }
-            
             # Extração de frames
             status_manager.update(
                 task_id,
@@ -598,6 +613,14 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                     webhook_error=webhook_error
                 )
             
+            # Remove arquivo temporário após processamento completo
+            if local_file_path and os.path.exists(local_file_path):
+                try:
+                    os.unlink(local_file_path)
+                    logger.debug(f"🗑️  CLEANUP: Arquivo temporário removido após processamento | path={local_file_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"⚠️  CLEANUP: Erro ao remover arquivo temporário | path={local_file_path} | Erro: {cleanup_error}")
+            
             return {
                 "success": True,
                 "task_id": task_id,
@@ -650,6 +673,14 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                     webhook_status=webhook_status_code,
                     webhook_error=webhook_error
                 )
+        
+        # Remove arquivo temporário em caso de erro
+        if local_file_path and os.path.exists(local_file_path):
+            try:
+                os.unlink(local_file_path)
+                logger.debug(f"🗑️  CLEANUP: Arquivo temporário removido após erro | path={local_file_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️  CLEANUP: Erro ao remover arquivo temporário após erro | path={local_file_path} | Erro: {cleanup_error}")
         
         raise
 
