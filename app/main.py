@@ -137,12 +137,19 @@ async def root():
 
 @app.post(
     "/submit_remove_task",
-    summary="Inicia uma tarefa de processamento de vídeo",
+    summary="Inicia processamento de vídeo (remoção de marcas d'água)",
     description=(
-        "Recebe um vídeo e cria uma tarefa assíncrona para remoção de marcas d'água. "
-        "**Atenção**: Parâmetros override são opcionais e validados. "
-        "Webhook (se informado) recebe POST ao final (sucesso/erro). "
-        "Valores inválidos retornam erro 422 com detalhes descritivos."
+        "Recebe um vídeo e cria uma tarefa assíncrona para remoção de marcas d'água usando YOLO + LAMA.\n\n"
+        "**Parâmetros principais:**\n"
+        "- `override_conf`: Threshold de detecção (0.05-0.8). Menor=mais sensível.\n"
+        "- `override_mask_expand`: Expansão da máscara em pixels (0-128). Maior=área maior removida.\n\n"
+        "**Parâmetros avançados (novo):**\n"
+        "- `max_det`: Máximo de marcas por frame (1-50). Permite detectar múltiplas logos.\n"
+        "- `agnostic_nms`: Detecta múltiplas instâncias da mesma marca (True recomendado).\n"
+        "- `blend_alpha`: Suavização do inpainting (0.0-1.0). 0.85=natural, 1.0=máxima remoção.\n\n"
+        "**Combinação típica para múltiplas logos:**\n"
+        "`max_det=20`, `agnostic_nms=true`, `blend_alpha=0.85`\n\n"
+        "**Webhook (opcional):** Recebe POST ao concluir (sucesso ou erro)."
     ),
     response_model=SubmitResponse,
 )
@@ -167,6 +174,25 @@ async def submit_remove_task(
         ge=1,
         description="(opcional) Intervalo de frames para processamento (≥1). 1=processa todos, 2=metade, etc. Aumenta velocidade mas reduz precisão.",
         example=1
+    ),
+    max_det: Optional[int] = Form(
+        None,
+        ge=1,
+        le=50,
+        description="(opcional) Máximo de marcas detectadas por frame [1-50]. Valores maiores detectam múltiplas logos (topo, meio, rodapé).",
+        example=10
+    ),
+    agnostic_nms: Optional[bool] = Form(
+        None,
+        description="(opcional) NMS agnóstico a classes. True detecta múltiplas instâncias da mesma marca.",
+        example=True
+    ),
+    blend_alpha: Optional[float] = Form(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="(opcional) Força do inpainting [0.0-1.0]. 1.0=máxima reconstrução, 0.85=suavizado (recomendado), <0.7=marca residual.",
+        example=0.85
     ),
     webhook_url: Optional[str] = Form(
         None,
@@ -229,6 +255,9 @@ async def submit_remove_task(
                 "override_conf": override_conf,
                 "override_mask_expand": override_mask_expand if override_mask_expand is not None else None,
                 "override_frame_stride": override_frame_stride if override_frame_stride is not None else None,
+                "max_det": max_det,
+                "agnostic_nms": agnostic_nms,
+                "blend_alpha": blend_alpha,
                 "webhook_url": validated_webhook
             }
             logger.info(
@@ -236,6 +265,9 @@ async def submit_remove_task(
                 f"conf={override_conf if override_conf is not None else 'default'} | "
                 f"mask_expand={override_mask_expand if override_mask_expand is not None else 'default'} | "
                 f"stride={override_frame_stride if override_frame_stride is not None else 'default'} | "
+                f"max_det={max_det if max_det is not None else 'default'} | "
+                f"agnostic_nms={agnostic_nms if agnostic_nms is not None else 'default'} | "
+                f"blend_alpha={blend_alpha if blend_alpha is not None else 'default'} | "
                 f"webhook={'sim' if validated_webhook else 'não'} | "
                 f"task_id={task_id}"
             )

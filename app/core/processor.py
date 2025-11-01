@@ -79,22 +79,35 @@ def detect_watermarks(
     frame: np.ndarray,
     conf: float,
     iou: float,
-    device: str
+    device: str,
+    max_det: int = 10,
+    agnostic_nms: bool = True
 ) -> list:
     """
     Detecta marcas d'água em um frame usando YOLO.
+    
+    Args:
+        max_det: Máximo de detecções por frame
+        agnostic_nms: NMS agnóstico a classes (detecta múltiplas instâncias)
     
     Returns:
         Lista de bounding boxes [(x1, y1, x2, y2), ...]
     """
     model = get_yolo_model()
-    results = model(frame, conf=conf, iou=iou, device=device, verbose=False)
+    results = model(
+        frame,
+        conf=conf,
+        iou=iou,
+        device=device,
+        max_det=max_det,
+        agnostic_nms=agnostic_nms,
+        verbose=False
+    )
     
     boxes = []
     for result in results:
         if result.boxes is not None:
             for box in result.boxes:
-                # Converte para coordenadas (x1, y1, x2, y2)
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                 boxes.append((int(x1), int(y1), int(x2), int(y2)))
     
@@ -129,22 +142,33 @@ def expand_mask(boxes: list, expand_px: int, frame_shape: tuple) -> np.ndarray:
     return mask
 
 
-def inpaint_frame_lama(frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
+def inpaint_frame_lama(
+    frame: np.ndarray,
+    mask: np.ndarray,
+    blend_alpha: float = 1.0
+) -> np.ndarray:
     """
     Aplica inpainting em um frame usando algoritmo LAMA (OpenCV).
+    
+    Args:
+        blend_alpha: Força do inpainting (0.0=original, 1.0=100% inpainted)
     
     Nota: Para LAMA completo, seria necessário instalar lama-cleaner.
     Aqui usamos cv2.INPAINT_TELEA como fallback.
     """
-    # OpenCV inpainting (método rápido)
-    result = cv2.inpaint(frame, mask, 3, cv2.INPAINT_TELEA)
+    # OpenCV inpainting
+    inpainted = cv2.inpaint(frame, mask, 3, cv2.INPAINT_TELEA)
     
-    # TODO: Se necessário, integrar lama-cleaner real:
-    # from lama_cleaner.model_manager import ModelManager
-    # from lama_cleaner.schema import Config
-    # ...
+    # Blending condicional (apenas se alpha < 1.0)
+    if blend_alpha < 1.0:
+        result = cv2.addWeighted(
+            inpainted, blend_alpha,
+            frame, 1.0 - blend_alpha,
+            0
+        )
+        return result
     
-    return result
+    return inpainted
 
 
 def extract_frames(video_path: str, output_dir: str, stride: int = 1) -> tuple[int, list[str]]:
@@ -311,6 +335,11 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
         frame_stride = max(1, int(override_frame_stride)) if override_frame_stride is not None else settings.FRAME_STRIDE
         device = settings.validate_device()
         
+        # Parâmetros avançados
+        max_det = settings.validate_max_det(params.get('max_det'))
+        agnostic_nms = params.get('agnostic_nms', settings.YOLO_AGNOSTIC_NMS)
+        blend_alpha = settings.validate_blend_alpha(params.get('blend_alpha'))
+        
         # Registra device efetivo e versão ultralytics
         try:
             import ultralytics
@@ -325,7 +354,10 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             params_effective={
                 "yolo_conf": conf,
                 "yolo_iou": iou,
+                "yolo_max_det": max_det,
+                "yolo_agnostic_nms": agnostic_nms,
                 "mask_expand": mask_expand,
+                "blend_alpha": blend_alpha,
                 "frame_stride": frame_stride,
                 "torch_device": device
             }
@@ -336,7 +368,10 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             params_effective={
                 "yolo_conf": conf,
                 "yolo_iou": iou,
+                "yolo_max_det": max_det,
+                "yolo_agnostic_nms": agnostic_nms,
                 "mask_expand": mask_expand,
+                "blend_alpha": blend_alpha,
                 "frame_stride": frame_stride,
                 "torch_device": device
             },
@@ -383,49 +418,19 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 log_excerpt=f"Detectando marcas d'água em {total_frames} frames..."
             )
             
-            # Processa cada frame
+            # Processa cada frame com detecção individual
             processed_frames_dir = os.path.join(temp_dir, "processed_frames")
             os.makedirs(processed_frames_dir, exist_ok=True)
             
-            # Detecta marcas em frames de amostra (primeiro, meio, último)
-            # para capturar variações de posição
-            all_boxes = []
-            sample_indices = [0]
-            if len(frame_files) > 1:
-                sample_indices.append(len(frame_files) // 2)
-            if len(frame_files) > 2:
-                sample_indices.append(len(frame_files) - 1)
-            
-            detect_start = time.time()
-            for idx in sample_indices:
-                sample_frame = cv2.imread(frame_files[idx])
-                boxes = detect_watermarks(sample_frame, conf, iou, device)
-                all_boxes.extend(boxes)
-            
-            detect_duration = time.time() - detect_start
-            total_detections = len(all_boxes)
-            
-            # Remove duplicatas próximas (merge de boxes similares)
-            cod5_log("task.detect_done", task_id=task_id, detections=total_detections, sample_frames=len(sample_indices), duration_s=detect_duration)
-            
-            # Cria máscara base a partir de todas as detecções
-            if all_boxes:
-                sample_frame = cv2.imread(frame_files[0])
-                mask = expand_mask(all_boxes, mask_expand, sample_frame.shape)
-            else:
-                # Se não detectou nada, cria máscara vazia
-                sample_frame = cv2.imread(frame_files[0])
-                mask = np.zeros((sample_frame.shape[0], sample_frame.shape[1]), dtype=np.uint8)
-            
-            # Inpainting e processamento
             status_manager.update(
                 task_id,
-                stage="inpainting",
+                stage="detecting_inpainting",
                 progress=20,
-                log_excerpt="Aplicando inpainting nos frames..."
+                log_excerpt="Detectando e removendo marcas d'água..."
             )
             
             inpaint_start = time.time()
+            total_detections = 0
             
             for idx, frame_path in enumerate(frame_files):
                 frame = cv2.imread(frame_path)
@@ -433,25 +438,41 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                     cod5_log("task.frame_read_error", task_id=task_id, frame_idx=idx)
                     continue
                 
-                # Aplica inpainting
-                cleaned = inpaint_frame_lama(frame, mask)
+                # Detecta marcas d'água neste frame específico
+                boxes = detect_watermarks(frame, conf, iou, device, max_det, agnostic_nms)
+                total_detections += len(boxes)
                 
-                # Salva frame processado (numeração começando em 1 para ffmpeg)
+                # Cria máscara para este frame
+                if boxes:
+                    mask = expand_mask(boxes, mask_expand, frame.shape)
+                    # Aplica inpainting com blending
+                    cleaned = inpaint_frame_lama(frame, mask, blend_alpha)
+                else:
+                    # Sem detecções, mantém frame original
+                    cleaned = frame
+                
+                # Salva frame processado
                 output_frame_path = os.path.join(processed_frames_dir, f"frame_{idx+1:06d}.png")
                 cv2.imwrite(output_frame_path, cleaned)
                 
-                # Atualiza progresso a cada 10 frames ou no último
+                # Atualiza progresso a cada 10 frames
                 if (idx + 1) % 10 == 0 or (idx + 1) == len(frame_files):
-                    progress = 20 + int((idx + 1) / len(frame_files) * 60)  # 20-80%
+                    progress = 20 + int((idx + 1) / len(frame_files) * 60)
                     status_manager.update(
                         task_id,
                         frames_done=idx+1,
                         progress=progress,
-                        log_excerpt=f"Frame {idx+1}/{len(frame_files)} processado..."
+                        log_excerpt=f"Frame {idx+1}/{len(frame_files)} processado ({len(boxes)} marcas detectadas)..."
                     )
             
             inpaint_duration = time.time() - inpaint_start
-            cod5_log("task.inpaint_done", task_id=task_id, frames_processed=len(frame_files), duration_s=inpaint_duration)
+            cod5_log(
+                "task.detect_inpaint_done",
+                task_id=task_id,
+                frames_processed=len(frame_files),
+                total_detections=total_detections,
+                duration_s=inpaint_duration
+            )
             
             # Renderização
             status_manager.update(

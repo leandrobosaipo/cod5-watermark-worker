@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     TORCH_DEVICE: str = "mps"  # cpu|mps|cuda
     YOLO_CONF: float = 0.25  # 0.05–0.8
     YOLO_IOU: float = 0.45  # 0.1–0.9
+    YOLO_MAX_DET: int = 10  # máximo de detecções por frame
+    YOLO_AGNOSTIC_NMS: bool = True  # NMS agnóstico a classes
+    INPAINT_BLEND_ALPHA: float = 0.85  # força do inpainting (0.0-1.0)
     MASK_EXPAND: int = 18  # pixels
     FRAME_STRIDE: int = 1  # 1 = todos os frames
     
@@ -103,6 +106,16 @@ class Settings(BaseSettings):
         """Valida YOLO IOU."""
         iou = value or self.YOLO_IOU
         return max(0.1, min(0.9, iou))
+    
+    def validate_max_det(self, value: Optional[int] = None) -> int:
+        """Valida max_det (1-50)."""
+        max_det = value or self.YOLO_MAX_DET
+        return max(1, min(50, max_det))
+    
+    def validate_blend_alpha(self, value: Optional[float] = None) -> float:
+        """Valida blend_alpha (0.0-1.0)."""
+        alpha = value or self.INPAINT_BLEND_ALPHA
+        return max(0.0, min(1.0, alpha))
     
     def get_allowed_mimes(self) -> list[str]:
         """Retorna lista de MIME types permitidos."""

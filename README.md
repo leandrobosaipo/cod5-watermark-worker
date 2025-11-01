@@ -271,6 +271,9 @@ YOLO_MODEL_PATH=/app/models/best.pt
 TORCH_DEVICE=mps            # cpu|mps|cuda
 YOLO_CONF=0.25              # 0.05–0.8
 YOLO_IOU=0.45               # 0.1–0.9
+YOLO_MAX_DET=10             # máximo de detecções por frame
+YOLO_AGNOSTIC_NMS=True      # NMS agnóstico a classes
+INPAINT_BLEND_ALPHA=0.85    # força do inpainting (0.0-1.0)
 MASK_EXPAND=18              # pixels
 FRAME_STRIDE=1              # 1 = todos os frames
 
@@ -288,9 +291,9 @@ TASK_TTL_HOURS=72
 2. **Fila:** Celery (Redis) ou fallback ThreadPool.
 3. **Processamento:**
    - Extrai frames (FFmpeg).
-   - **YOLO** detecta regiões (logo Sora e similares).
-   - Expande/une máscaras (`MASK_EXPAND`).
-   - **LAMA** faz inpainting nas áreas detectadas.
+   - **YOLO** detecta marcas d'água **frame a frame** (até `max_det` por frame).
+   - Expande máscaras por frame (`MASK_EXPAND`).
+   - **LAMA** aplica inpainting com blending configurável (`blend_alpha`).
    - Render final (FFmpeg), mantém áudio.
 4. **Publicação:** Envia para `outputs/` no Spaces, atualiza status 100%.
 5. **Webhook (opcional):** POST com payload final ao `webhook_url`.
@@ -402,6 +405,77 @@ cod5-watermark-worker/
 ```
 
 **Efeitos colaterais:** Webhook falhando não afeta o processamento, mas o status HTTP e erro são registrados nos logs e no status da tarefa.
+
+### Parâmetros Avançados (Novo)
+
+#### `max_det` (opcional, 1-50, default: 10)
+**O que faz:** Define o número máximo de marcas d'água que o YOLO pode detectar por frame.
+
+**Quando usar:**
+- **10 (padrão):** Maioria dos casos - detecta logos em topo, meio, rodapé
+- **20-50:** Vídeos com múltiplas marcas repetidas ou sobrepostas
+- **1-5:** Apenas uma marca principal conhecida (mais rápido)
+
+**Combinação recomendada:** Use com `agnostic_nms=True` para detectar múltiplas instâncias da mesma marca.
+
+#### `agnostic_nms` (opcional, bool, default: True)
+**O que faz:** Habilita NMS (Non-Maximum Suppression) agnóstico a classes, permitindo detectar múltiplas instâncias da mesma marca d'água.
+
+**Quando usar:**
+- **True (padrão):** Detecta múltiplas logos idênticas (ex: rodapé esquerdo + direito)
+- **False:** Apenas quando marca d'água é única e bem definida
+
+**Efeito:** Com `False`, YOLO pode ignorar logos duplicadas no mesmo frame.
+
+#### `blend_alpha` (opcional, 0.0-1.0, default: 0.85)
+**O que faz:** Controla a intensidade da reconstrução. 1.0 aplica 100% do inpainting, valores menores misturam com o frame original.
+
+**Quando usar:**
+- **0.85 (padrão):** Suaviza bordas da reconstrução, resultado natural
+- **0.90-1.0:** Marca muito forte, máxima remoção
+- **0.70-0.80:** Marca sutil, preferência por preservar textura original
+
+**Efeito visual:**
+- `1.0`: Área reconstruída pode parecer "artificial" ou "borrada"
+- `0.85`: Mistura suave, transição imperceptível
+- `<0.7`: Marca residual visível (útil para testes)
+
+### Combinações de Parâmetros
+
+#### Cenário 1: Múltiplas logos (topo + rodapé)
+```bash
+curl -X POST "https://SEU_DOMINIO/submit_remove_task" \
+  -F "file=@video.mp4" \
+  -F "max_det=20" \
+  -F "agnostic_nms=true" \
+  -F "blend_alpha=0.85"
+```
+
+#### Cenário 2: Marca d'água sutil
+```bash
+curl -X POST "https://SEU_DOMINIO/submit_remove_task" \
+  -F "file=@video.mp4" \
+  -F "override_conf=0.15" \
+  -F "override_mask_expand=24" \
+  -F "blend_alpha=0.80"
+```
+
+#### Cenário 3: Logo grande e forte
+```bash
+curl -X POST "https://SEU_DOMINIO/submit_remove_task" \
+  -F "file=@video.mp4" \
+  -F "override_conf=0.4" \
+  -F "override_mask_expand=30" \
+  -F "blend_alpha=0.95"
+```
+
+#### Cenário 4: Processamento rápido (trade-off qualidade)
+```bash
+curl -X POST "https://SEU_DOMINIO/submit_remove_task" \
+  -F "file=@video.mp4" \
+  -F "override_frame_stride=2" \
+  -F "max_det=5"
+```
 
 ### Variáveis de Ambiente
 
