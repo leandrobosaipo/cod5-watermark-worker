@@ -18,7 +18,6 @@ from .core.utils import (
     sanitize_filename,
     cod5_log
 )
-from .core.storage import storage
 from .core.status import status_manager
 from .core.queue import enqueue_video_processing
 from .core.processor import process_video
@@ -368,6 +367,7 @@ async def submit_remove_task(
             logger.info(f"📤 UPLOAD_SYNC: Iniciando upload imediato para Spaces | task_id={task_id}")
             import time
             upload_start = time.time()
+            spaces_url = None  # Inicializa antes do try para evitar NameError
             
             try:
                 spaces_url = storage.upload_file(tmp_path, spaces_key)
@@ -429,6 +429,19 @@ async def submit_remove_task(
                     status="error",
                     error_detail=error_msg,
                     message=f"Erro ao fazer upload: {error_msg}"
+                )
+                raise HTTPException(status_code=500, detail=error_msg)
+            
+            # Valida que spaces_url foi definida antes de usar
+            if spaces_url is None:
+                error_msg = "Upload falhou: URL do arquivo não foi obtida"
+                logger.error(f"❌ UPLOAD_VALIDATION: {error_msg} | task_id={task_id}")
+                # Atualiza status para erro
+                status_manager.update(
+                    task_id,
+                    status="error",
+                    error_detail=error_msg,
+                    message=f"Erro: {error_msg}"
                 )
                 raise HTTPException(status_code=500, detail=error_msg)
             
