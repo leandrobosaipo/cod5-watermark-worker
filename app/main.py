@@ -140,16 +140,34 @@ async def root():
     summary="Inicia processamento de vídeo (remoção de marcas d'água)",
     description=(
         "Recebe um vídeo e cria uma tarefa assíncrona para remoção de marcas d'água usando YOLO + LAMA.\n\n"
-        "**Parâmetros principais:**\n"
-        "- `override_conf`: Threshold de detecção (0.05-0.8). Menor=mais sensível.\n"
-        "- `override_mask_expand`: Expansão da máscara em pixels (0-128). Maior=área maior removida.\n\n"
-        "**Parâmetros avançados (novo):**\n"
-        "- `max_det`: Máximo de marcas por frame (1-50). Permite detectar múltiplas logos.\n"
-        "- `agnostic_nms`: Detecta múltiplas instâncias da mesma marca (True recomendado).\n"
-        "- `blend_alpha`: Suavização do inpainting (0.0-1.0). 0.85=natural, 1.0=máxima remoção.\n\n"
-        "**Combinação típica para múltiplas logos:**\n"
-        "`max_det=20`, `agnostic_nms=true`, `blend_alpha=0.85`\n\n"
-        "**Webhook (opcional):** Recebe POST ao concluir (sucesso ou erro)."
+        "## ⚙️ Recomendações ideais de configuração\n\n"
+        "**1. Precisão da detecção (override_conf)**\n\n"
+        "Valor padrão: 0.55\n\n"
+        "Função: controla a sensibilidade do YOLO. Valores menores detectam mais objetos (incluindo ruídos), valores maiores focam apenas em logos bem definidas.\n\n"
+        "Ajuste sugerido: 0.4–0.6\n\n"
+        "Isso reduz falsos positivos e melhora o recorte da área da marca, tornando a máscara mais fiel à logo real.\n\n"
+        "**2. Expansão da máscara (override_mask_expand)**\n\n"
+        "Valor padrão: 4 pixels\n\n"
+        "Função: controla quantos pixels são adicionados ao redor da área detectada antes do inpainting.\n\n"
+        "Ajuste sugerido: 4–8 pixels\n\n"
+        "Recorte justo, suficiente para englobar pequenos contornos sem borrar áreas amplas.\n\n"
+        "**3. Máximo de detecções (max_det)**\n\n"
+        "Valor padrão: 10\n\n"
+        "Função: define quantas instâncias o YOLO pode marcar por frame.\n\n"
+        "Ideal para detectar as 3 posições típicas (topo, meio, rodapé) sem sobrecarga.\n\n"
+        "**4. NMS agnóstico (agnostic_nms)**\n\n"
+        "Valor padrão: true\n\n"
+        "Função: permite múltiplas detecções da mesma classe.\n\n"
+        "Mantenha assim — essencial para detectar múltiplas logos idênticas no mesmo frame.\n\n"
+        "**5. Força do inpainting (blend_alpha)**\n\n"
+        "Valor padrão: 0.75\n\n"
+        "Função: regula a suavização da reconstrução. Valores menores preservam textura original, valores maiores aplicam reconstrução mais agressiva.\n\n"
+        "Ajuste sugerido: 0.75–0.85\n\n"
+        "Suavização leve que preserva textura natural do vídeo.\n\n"
+        "**6. Intervalo de frames (override_frame_stride)**\n\n"
+        "Valor padrão: 1\n\n"
+        "Função: controla quantos frames são processados (1 = todos os frames).\n\n"
+        "Mantenha assim para precisão máxima — você quer detectar cada frame, pois as logos aparecem em momentos diferentes."
     ),
     response_model=SubmitResponse,
 )
@@ -160,14 +178,14 @@ async def submit_remove_task(
         ge=0.05,
         le=0.8,
         description="(opcional) Threshold do detector YOLO [0.05–0.8]. Valores menores detectam mais ruídos, maiores podem perder marcas.",
-        example=0.25
+        example=0.55
     ),
     override_mask_expand: Optional[int] = Form(
         None,
         ge=0,
         le=128,
         description="(opcional) Expansão da máscara em pixels [0–128]. Valores maiores cobrem mais área ao redor da detecção.",
-        example=18
+        example=4
     ),
     override_frame_stride: Optional[int] = Form(
         None,
@@ -191,8 +209,8 @@ async def submit_remove_task(
         None,
         ge=0.0,
         le=1.0,
-        description="(opcional) Força do inpainting [0.0-1.0]. 1.0=máxima reconstrução, 0.85=suavizado (recomendado), <0.7=marca residual.",
-        example=0.85
+        description="(opcional) Força do inpainting [0.0-1.0]. 1.0=máxima reconstrução, 0.75=suavizado (recomendado), <0.7=marca residual.",
+        example=0.75
     ),
     webhook_url: Optional[str] = Form(
         None,

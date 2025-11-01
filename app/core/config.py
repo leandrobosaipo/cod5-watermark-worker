@@ -33,12 +33,12 @@ class Settings(BaseSettings):
     # Modelos & Device
     YOLO_MODEL_PATH: str = "/app/models/best.pt"
     TORCH_DEVICE: str = "mps"  # cpu|mps|cuda
-    YOLO_CONF: float = 0.25  # 0.05–0.8
+    YOLO_CONF: float = 0.55  # 0.05–0.8
     YOLO_IOU: float = 0.45  # 0.1–0.9
     YOLO_MAX_DET: int = 10  # máximo de detecções por frame
     YOLO_AGNOSTIC_NMS: bool = True  # NMS agnóstico a classes
-    INPAINT_BLEND_ALPHA: float = 0.85  # força do inpainting (0.0-1.0)
-    MASK_EXPAND: int = 18  # pixels
+    INPAINT_BLEND_ALPHA: float = 0.75  # força do inpainting (0.0-1.0)
+    MASK_EXPAND: int = 4  # pixels
     FRAME_STRIDE: int = 1  # 1 = todos os frames
     
     # Limites & housekeeping

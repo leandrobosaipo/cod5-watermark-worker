@@ -131,9 +131,9 @@ Status detalhado de uma tarefa.
   "spaces_output": null,
   "log_excerpt": "Frame 346/480 cleaned...",
   "params_effective": {
-    "yolo_conf": 0.25,
+    "yolo_conf": 0.55,
     "yolo_iou": 0.45,
-    "mask_expand": 18,
+    "mask_expand": 4,
     "frame_stride": 1,
     "torch_device": "mps"
   }
@@ -269,12 +269,12 @@ SPACES_SECRET=***COLOQUE_AQUI***
 # Modelos & Device
 YOLO_MODEL_PATH=/app/models/best.pt
 TORCH_DEVICE=mps            # cpu|mps|cuda
-YOLO_CONF=0.25              # 0.05–0.8
+YOLO_CONF=0.55              # 0.05–0.8
 YOLO_IOU=0.45               # 0.1–0.9
 YOLO_MAX_DET=10             # máximo de detecções por frame
 YOLO_AGNOSTIC_NMS=True      # NMS agnóstico a classes
-INPAINT_BLEND_ALPHA=0.85    # força do inpainting (0.0-1.0)
-MASK_EXPAND=18              # pixels
+INPAINT_BLEND_ALPHA=0.75    # força do inpainting (0.0-1.0)
+MASK_EXPAND=4               # pixels
 FRAME_STRIDE=1              # 1 = todos os frames
 
 # Limites & housekeeping
@@ -343,6 +343,76 @@ cod5-watermark-worker/
 
 ## 📖 Parâmetros Detalhados
 
+### ⚙️ Recomendações ideais de configuração
+
+#### 1. Precisão da detecção (override_conf)
+
+**Valor padrão:** 0.55
+
+**Função:** Controla a sensibilidade do YOLO. Valores menores detectam mais objetos (incluindo ruídos), valores maiores focam apenas em logos bem definidas.
+
+**Ajuste sugerido:** 0.4–0.6
+
+Isso reduz falsos positivos e melhora o recorte da área da marca, tornando a máscara mais fiel à logo real.
+
+👉 **Sugestão:** `override_conf = 0.55`
+
+#### 2. Expansão da máscara (override_mask_expand)
+
+**Valor padrão:** 4 pixels
+
+**Função:** Controla quantos pixels são adicionados ao redor da área detectada antes do inpainting.
+
+**Problema:** Quanto maior esse número, mais o algoritmo "come" em volta da logo.
+
+**Ajuste sugerido:** 4–8 pixels — suficiente para englobar pequenos contornos sem borrar áreas amplas.
+
+👉 **Sugestão:** `override_mask_expand = 4`
+
+#### 3. Máximo de detecções (max_det)
+
+**Valor padrão:** 10
+
+**Função:** Define quantas instâncias o YOLO pode marcar por frame.
+
+Como você tem 3 posições fixas (topo, meio, rodapé), um limite de 10 já é mais do que suficiente e reduz sobreposição.
+
+👉 **Sugestão:** `max_det = 10`
+
+#### 4. NMS agnóstico (agnostic_nms)
+
+**Valor padrão:** true
+
+**Função:** Permite múltiplas detecções da mesma classe.
+
+Mantenha assim — essencial para detectar múltiplas logos idênticas no mesmo frame.
+
+👉 **Sem alteração:** `agnostic_nms = true`
+
+#### 5. Força do inpainting (blend_alpha)
+
+**Valor padrão:** 0.75
+
+**Função:** Regula a suavização da reconstrução. Valores menores preservam textura original, valores maiores aplicam reconstrução mais agressiva.
+
+**Ajuste sugerido:** 0.75–0.85
+
+Suavização leve que preserva textura natural do vídeo.
+
+👉 **Sugestão:** `blend_alpha = 0.75`
+
+#### 6. Intervalo de frames (override_frame_stride)
+
+**Valor padrão:** 1
+
+**Função:** Controla quantos frames são processados (1 = todos os frames).
+
+Mantenha assim para precisão máxima — você quer detectar cada frame, pois as logos aparecem em momentos diferentes.
+
+👉 **Sem alteração:** `override_frame_stride = 1`
+
+---
+
 ### Parâmetros de Upload
 
 #### `override_conf` (opcional, 0.05–0.8)
@@ -350,7 +420,7 @@ cod5-watermark-worker/
 
 **Quando usar:**
 - **Menor (0.05–0.2):** Marca d'água muito sutil, logo pequeno, vídeos com baixa qualidade.
-- **Padrão (0.25):** Maioria dos casos — bom equilíbrio.
+- **Padrão (0.55):** Maioria dos casos — foca apenas em logos reais.
 - **Maior (0.4–0.8):** Marca d'água bem visível, logs grandes, máxima precisão.
 
 **Efeitos colaterais:** Valores muito baixos podem detectar falhas de compressão como marcas; valores muito altos podem perder marcas pequenas ou parcialmente transparentes.
@@ -360,7 +430,7 @@ cod5-watermark-worker/
 
 **Quando usar:**
 - **Menor (0–10):** Marcas com bordas bem definidas, logo pequeno, vídeo HD+.
-- **Padrão (18):** Maioria dos casos.
+- **Padrão (4):** Maioria dos casos — recorte justo.
 - **Maior (30–128):** Marcas com sombras/efeitos, logos grandes com blur, máxima cobertura.
 
 **Efeitos colaterais:** Valores muito grandes podem remover conteúdo legítimo próximo à marca (por exemplo, texto ou objetos adjacentes).
@@ -427,17 +497,17 @@ cod5-watermark-worker/
 
 **Efeito:** Com `False`, YOLO pode ignorar logos duplicadas no mesmo frame.
 
-#### `blend_alpha` (opcional, 0.0-1.0, default: 0.85)
+#### `blend_alpha` (opcional, 0.0-1.0, default: 0.75)
 **O que faz:** Controla a intensidade da reconstrução. 1.0 aplica 100% do inpainting, valores menores misturam com o frame original.
 
 **Quando usar:**
-- **0.85 (padrão):** Suaviza bordas da reconstrução, resultado natural
+- **0.75 (padrão):** Suaviza bordas da reconstrução, resultado natural
 - **0.90-1.0:** Marca muito forte, máxima remoção
 - **0.70-0.80:** Marca sutil, preferência por preservar textura original
 
 **Efeito visual:**
 - `1.0`: Área reconstruída pode parecer "artificial" ou "borrada"
-- `0.85`: Mistura suave, transição imperceptível
+- `0.75`: Mistura suave, transição imperceptível
 - `<0.7`: Marca residual visível (útil para testes)
 
 ### Combinações de Parâmetros
@@ -446,9 +516,9 @@ cod5-watermark-worker/
 ```bash
 curl -X POST "https://SEU_DOMINIO/submit_remove_task" \
   -F "file=@video.mp4" \
-  -F "max_det=20" \
+  -F "max_det=10" \
   -F "agnostic_nms=true" \
-  -F "blend_alpha=0.85"
+  -F "blend_alpha=0.75"
 ```
 
 #### Cenário 2: Marca d'água sutil
@@ -456,17 +526,17 @@ curl -X POST "https://SEU_DOMINIO/submit_remove_task" \
 curl -X POST "https://SEU_DOMINIO/submit_remove_task" \
   -F "file=@video.mp4" \
   -F "override_conf=0.15" \
-  -F "override_mask_expand=24" \
-  -F "blend_alpha=0.80"
+  -F "override_mask_expand=8" \
+  -F "blend_alpha=0.70"
 ```
 
 #### Cenário 3: Logo grande e forte
 ```bash
 curl -X POST "https://SEU_DOMINIO/submit_remove_task" \
   -F "file=@video.mp4" \
-  -F "override_conf=0.4" \
-  -F "override_mask_expand=30" \
-  -F "blend_alpha=0.95"
+  -F "override_conf=0.6" \
+  -F "override_mask_expand=10" \
+  -F "blend_alpha=0.90"
 ```
 
 #### Cenário 4: Processamento rápido (trade-off qualidade)
@@ -492,7 +562,7 @@ curl -X POST "https://SEU_DOMINIO/submit_remove_task" \
 #### `FRAME_STRIDE` (≥1, default: 1)
 **Valor global** aplicado quando `override_frame_stride` não é fornecido. Mesmas regras acima.
 
-#### `MASK_EXPAND` (≥0, default: 18)
+#### `MASK_EXPAND` (≥0, default: 4)
 **Valor global** aplicado quando `override_mask_expand` não é fornecido. Mesmas regras acima.
 
 ---
