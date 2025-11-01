@@ -19,4 +19,5 @@ python-multipart==0.0.9
 celery==5.4.0
 redis==5.1.0
 pydantic-settings==2.5.2
+aiofiles>=23.2.0
 

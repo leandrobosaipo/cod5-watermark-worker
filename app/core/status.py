@@ -43,6 +43,12 @@ class TaskStatus:
         self.webhook_status: Optional[int] = None
         self.webhook_error: Optional[str] = None
         
+        # Métricas de vídeo
+        self.video_metadata: Dict[str, Any] = {}
+        self.processing_metrics: Dict[str, Any] = {}
+        self.performance_metrics: Dict[str, Any] = {}
+        self.resource_usage: Dict[str, Any] = {}
+        
         # Atualiza com kwargs
         for key, value in kwargs.items():
             if hasattr(self, key):
@@ -69,6 +75,10 @@ class TaskStatus:
             "error_detail": self.error_detail,
             "webhook_status": self.webhook_status,
             "webhook_error": self.webhook_error,
+            "video_metadata": self.video_metadata,
+            "processing_metrics": self.processing_metrics,
+            "performance_metrics": self.performance_metrics,
+            "resource_usage": self.resource_usage,
         }
     
     def update(self, **kwargs) -> None:

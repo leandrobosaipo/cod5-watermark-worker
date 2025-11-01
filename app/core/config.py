@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     # API
     API_PORT: int = 5344
     CORS_ORIGINS: str = "*"
+    API_TIMEOUT_KEEP_ALIVE: int = 300
+    API_TIMEOUT_GRACEFUL_SHUTDOWN: int = 30
+    API_LIMIT_CONCURRENCY: int = 10
+    API_BACKLOG: int = 2048
     
     # Queue
     QUEUE_BACKEND: Optional[str] = None  # redis://redis:6379/0 ou vazio para fallback
@@ -29,6 +33,7 @@ class Settings(BaseSettings):
     SPACES_BUCKET: str = "cod5"
     SPACES_KEY: str = ""
     SPACES_SECRET: str = ""
+    SPACES_FOLDER_PREFIX: str = "cod5-watermark-worker"
     
     # Modelos & Device
     YOLO_MODEL_PATH: str = "/app/models/best.pt"
@@ -45,6 +50,7 @@ class Settings(BaseSettings):
     MAX_FILE_MB: int = 800
     ALLOWED_MIME: str = "video/mp4,video/quicktime,video/x-msvideo"
     TASK_TTL_HOURS: int = 72
+    FILE_EXPIRATION_DAYS: int = 7
     
     class Config:
         env_file = ".env"

@@ -110,5 +110,12 @@ echo "[INFO] 🚀 Iniciando API FastAPI (Uvicorn) na porta ${API_PORT:-5344}..."
 echo "================================================================================"
 
 # Usa exec para que o uvicorn seja o processo principal
-exec python3 -m uvicorn app.main:app --host 0.0.0.0 --port ${API_PORT:-5344}
+# Configurações de timeout para suportar uploads grandes
+exec python3 -m uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port ${API_PORT:-5344} \
+  --timeout-keep-alive ${API_TIMEOUT_KEEP_ALIVE:-300} \
+  --timeout-graceful-shutdown ${API_TIMEOUT_GRACEFUL_SHUTDOWN:-30} \
+  --limit-concurrency ${API_LIMIT_CONCURRENCY:-10} \
+  --backlog ${API_BACKLOG:-2048}
 

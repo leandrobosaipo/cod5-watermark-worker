@@ -387,6 +387,10 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             download_duration = time.time() - download_start
             cod5_log("task.download_done", task_id=task_id, duration_s=download_duration)
             
+            performance_metrics = {
+                "download_time": download_duration
+            }
+            
             # Extração de frames
             status_manager.update(
                 task_id,
@@ -409,6 +413,8 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             total_frames, frame_files = extract_frames(local_video, frames_dir, stride=frame_stride)
             extract_duration = time.time() - extract_start
             cod5_log("task.extract_done", task_id=task_id, frames_total=total_frames, frame_stride=frame_stride, duration_s=extract_duration, fps=fps)
+            
+            performance_metrics["extract_time"] = extract_duration
             status_manager.update(
                 task_id,
                 frames_total=total_frames,
@@ -431,8 +437,10 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             
             inpaint_start = time.time()
             total_detections = 0
+            frame_processing_times = []
             
             for idx, frame_path in enumerate(frame_files):
+                frame_start = time.time()
                 frame = cv2.imread(frame_path)
                 if frame is None:
                     cod5_log("task.frame_read_error", task_id=task_id, frame_idx=idx)
@@ -455,17 +463,49 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 output_frame_path = os.path.join(processed_frames_dir, f"frame_{idx+1:06d}.png")
                 cv2.imwrite(output_frame_path, cleaned)
                 
+                frame_duration = time.time() - frame_start
+                frame_processing_times.append(frame_duration)
+                
                 # Atualiza progresso a cada 10 frames
                 if (idx + 1) % 10 == 0 or (idx + 1) == len(frame_files):
                     progress = 20 + int((idx + 1) / len(frame_files) * 60)
+                    
+                    # Calcula métricas de processamento
+                    avg_frame_time = sum(frame_processing_times) / len(frame_processing_times) if frame_processing_times else 0
+                    frames_per_second = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
+                    detections_per_frame = total_detections / (idx + 1) if idx > 0 else 0
+                    
+                    processing_metrics = {
+                        "frames_per_second": round(frames_per_second, 2),
+                        "detections_per_frame": round(detections_per_frame, 2),
+                        "avg_processing_time_per_frame": round(avg_frame_time, 3),
+                        "total_detections": total_detections
+                    }
+                    
                     status_manager.update(
                         task_id,
                         frames_done=idx+1,
                         progress=progress,
+                        processing_metrics=processing_metrics,
                         log_excerpt=f"Frame {idx+1}/{len(frame_files)} processado ({len(boxes)} marcas detectadas)..."
                     )
             
             inpaint_duration = time.time() - inpaint_start
+            performance_metrics["detect_time"] = inpaint_duration
+            performance_metrics["inpaint_time"] = inpaint_duration  # Combinado detect+inpaint
+            
+            # Calcula métricas finais de processamento
+            avg_frame_time = sum(frame_processing_times) / len(frame_processing_times) if frame_processing_times else 0
+            frames_per_second = 1.0 / avg_frame_time if avg_frame_time > 0 else 0
+            detections_per_frame = total_detections / len(frame_files) if frame_files else 0
+            
+            processing_metrics = {
+                "frames_per_second": round(frames_per_second, 2),
+                "detections_per_frame": round(detections_per_frame, 2),
+                "avg_processing_time_per_frame": round(avg_frame_time, 3),
+                "total_detections": total_detections
+            }
+            
             cod5_log(
                 "task.detect_inpaint_done",
                 task_id=task_id,
@@ -488,6 +528,7 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             render_video(processed_frames_dir, output_video, audio_source=local_video, fps=fps)
             
             render_duration = time.time() - render_start
+            performance_metrics["render_time"] = render_duration
             video_size_mb = os.path.getsize(output_video) / (1024 * 1024)
             cod5_log("render.done", task_id=task_id, size_mb=video_size_mb, duration_s=render_duration)
             
@@ -505,6 +546,7 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             output_url = storage.upload_file(output_video, output_key)
             
             upload_duration = time.time() - upload_start
+            performance_metrics["upload_time"] = upload_duration
             cod5_log("spaces.output", task_id=task_id, url=output_url, duration_s=upload_duration)
             
             # Finaliza
@@ -516,7 +558,9 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 progress=100,
                 spaces_output=output_url,
                 message="Watermark removed successfully",
-                log_excerpt="Processamento concluído!"
+                log_excerpt="Processamento concluído!",
+                performance_metrics=performance_metrics,
+                processing_metrics=processing_metrics
             )
             
             cod5_log("task.complete", task_id=task_id, total_duration_s=total_duration)

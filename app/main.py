@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field, HttpUrl
 import tempfile
+import aiofiles
 
 from .core.config import settings
 from .core.storage import storage
@@ -86,6 +87,10 @@ class TaskResponse(BaseModel):
     error_detail: Optional[str]
     webhook_status: Optional[int]
     webhook_error: Optional[str]
+    video_metadata: Optional[dict] = {}
+    processing_metrics: Optional[dict] = {}
+    performance_metrics: Optional[dict] = {}
+    resource_usage: Optional[dict] = {}
 
 
 class TaskListItem(BaseModel):
@@ -229,13 +234,71 @@ async def submit_remove_task(
         task_id = generate_task_id()
         logger.info(f"🆔 TASK_CREATED: task_id={task_id}")
         
-        # Salva arquivo temporariamente
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
+        # Salva arquivo temporariamente usando streaming
+        max_bytes = settings.MAX_FILE_MB * 1024 * 1024
+        tmp_path = tempfile.mktemp(suffix='.mp4')
+        bytes_written = 0
+        
+        logger.info(f"📤 UPLOAD_STREAM: Iniciando streaming de arquivo | task_id={task_id}")
         
         try:
+            async with aiofiles.open(tmp_path, 'wb') as tmp_file:
+                async for chunk in file.stream():
+                    bytes_written += len(chunk)
+                    # Valida tamanho durante streaming
+                    if bytes_written > max_bytes:
+                        file_size_mb = bytes_written / (1024 * 1024)
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Arquivo excede o limite de {settings.MAX_FILE_MB}MB (recebido: {file_size_mb:.2f}MB)"
+                        )
+                    await tmp_file.write(chunk)
+            
+            logger.info(f"✅ UPLOAD_STREAM: Arquivo salvo com sucesso | Tamanho: {bytes_written / (1024 * 1024):.2f}MB | task_id={task_id}")
+        except HTTPException:
+            # Remove arquivo parcial se excedeu limite
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+        except Exception as e:
+            # Remove arquivo parcial em caso de erro
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            logger.error(f"🔴 UPLOAD_STREAM: Erro durante streaming | Exception: {type(e).__name__} | {str(e)}")
+            raise
+        
+        try:
+            # Captura metadados do vídeo
+            video_metadata = {}
+            try:
+                import ffmpeg
+                probe = ffmpeg.probe(tmp_path)
+                video_info = next((s for s in probe.get('streams', []) if s.get('codec_type') == 'video'), None)
+                audio_info = next((s for s in probe.get('streams', []) if s.get('codec_type') == 'audio'), None)
+                format_info = probe.get('format', {})
+                
+                if video_info:
+                    video_metadata = {
+                        "width": video_info.get('width'),
+                        "height": video_info.get('height'),
+                        "fps": float(eval(video_info.get('r_frame_rate', '0/1'))) if 'r_frame_rate' in video_info else None,
+                        "avg_fps": float(eval(video_info.get('avg_frame_rate', '0/1'))) if 'avg_frame_rate' in video_info else None,
+                        "codec": video_info.get('codec_name'),
+                        "pixel_format": video_info.get('pix_fmt'),
+                        "bitrate": int(video_info.get('bit_rate', 0)) if video_info.get('bit_rate') else None,
+                        "duration": float(format_info.get('duration', 0)) if format_info.get('duration') else None,
+                        "file_size": os.path.getsize(tmp_path),
+                        "file_size_mb": round(os.path.getsize(tmp_path) / (1024 * 1024), 2)
+                    }
+                    if audio_info:
+                        video_metadata["audio_codec"] = audio_info.get('codec_name')
+                        video_metadata["audio_bitrate"] = int(audio_info.get('bit_rate', 0)) if audio_info.get('bit_rate') else None
+                        video_metadata["audio_sample_rate"] = int(audio_info.get('sample_rate', 0)) if audio_info.get('sample_rate') else None
+                
+                logger.info(f"📊 METADATA: Metadados do vídeo capturados | task_id={task_id} | Resolução: {video_metadata.get('width')}x{video_metadata.get('height')} | FPS: {video_metadata.get('fps')}")
+            except Exception as e:
+                logger.warning(f"⚠️  METADATA: Erro ao capturar metadados do vídeo | Exception: {type(e).__name__} | {str(e)} | task_id={task_id}")
+            
             # Upload para Spaces
             logger.info(f"📤 UPLOAD: Iniciando upload para Spaces | task_id={task_id}")
             spaces_key = f"uploads/{task_id}.mp4"
@@ -249,7 +312,8 @@ async def submit_remove_task(
                 stage="uploading",
                 progress=0,
                 spaces_input=spaces_url,
-                message="Video received. Processing will start soon."
+                message="Video received. Processing will start soon.",
+                video_metadata=video_metadata
             )
             logger.info(f"📊 STATUS: Status inicial criado | task_id={task_id} | status=queued")
             
@@ -409,27 +473,53 @@ async def delete_task(task_id: str):
     if not status:
         raise HTTPException(status_code=404, detail=f"Tarefa {task_id} não encontrada")
     
-    # Remove arquivos do Spaces
+    # Marca arquivos para expiração ao invés de deletar imediatamente
+    expiration_days = settings.FILE_EXPIRATION_DAYS
+    
     if status.spaces_input:
         try:
+            # Extrai key da URL ou do caminho
             input_key = status.spaces_input.split('/')[-1]
-            if 'uploads/' in status.spaces_input:
-                storage.delete_file(f"uploads/{input_key}")
+            if 'uploads/' in status.spaces_input or f"/{settings.SPACES_FOLDER_PREFIX}/uploads/" in status.spaces_input:
+                storage.mark_for_expiration(f"uploads/{input_key}", days=expiration_days)
+                logger.info(f"📅 EXPIRATION: Arquivo de input marcado para expiração em {expiration_days} dias | task_id={task_id}")
         except Exception as e:
-            logger.warning(f"Erro ao deletar input do Spaces: {e}")
+            logger.warning(f"Erro ao marcar input para expiração no Spaces: {e}")
     
     if status.spaces_output:
         try:
             output_key = status.spaces_output.split('/')[-1]
-            if 'outputs/' in status.spaces_output:
-                storage.delete_file(f"outputs/{output_key}")
+            if 'outputs/' in status.spaces_output or f"/{settings.SPACES_FOLDER_PREFIX}/outputs/" in status.spaces_output:
+                storage.mark_for_expiration(f"outputs/{output_key}", days=expiration_days)
+                logger.info(f"📅 EXPIRATION: Arquivo de output marcado para expiração em {expiration_days} dias | task_id={task_id}")
         except Exception as e:
-            logger.warning(f"Erro ao deletar output do Spaces: {e}")
+            logger.warning(f"Erro ao marcar output para expiração no Spaces: {e}")
     
     # Remove status local
     status_manager.delete(task_id)
     
-    return {"message": f"Tarefa {task_id} deletada com sucesso"}
+    return {
+        "message": f"Tarefa {task_id} marcada para expiração. Arquivos serão removidos automaticamente em {expiration_days} dias."
+    }
+
+
+@app.post("/admin/cleanup-expired")
+async def cleanup_expired():
+    """
+    Endpoint administrativo para limpar arquivos expirados manualmente.
+    """
+    logger.info("🧹 CLEANUP: Limpeza manual de arquivos expirados iniciada")
+    try:
+        deleted_files = storage.cleanup_expired_files()
+        return {
+            "success": True,
+            "message": f"Limpeza concluída: {len(deleted_files)} arquivos removidos",
+            "deleted_count": len(deleted_files),
+            "deleted_files": deleted_files[:50]  # Limita a 50 para não sobrecarregar resposta
+        }
+    except Exception as e:
+        logger.error(f"🔴 CLEANUP: Erro ao limpar arquivos expirados | Exception: {type(e).__name__} | {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao limpar arquivos expirados: {str(e)}")
 
 
 @app.get("/healthz")
@@ -582,6 +672,17 @@ async def startup_event():
     logger.info("🧹 CLEANUP: Limpando tarefas antigas...")
     status_manager.cleanup_old()
     logger.info("✅ CLEANUP: Limpeza de tarefas antigas concluída")
+    
+    # Limpeza de arquivos expirados no Spaces
+    logger.info("🧹 CLEANUP: Verificando arquivos expirados no Spaces...")
+    try:
+        deleted_files = storage.cleanup_expired_files()
+        if deleted_files:
+            logger.info(f"✅ CLEANUP: {len(deleted_files)} arquivos expirados removidos do Spaces")
+        else:
+            logger.info("✅ CLEANUP: Nenhum arquivo expirado encontrado")
+    except Exception as e:
+        logger.warning(f"⚠️  CLEANUP: Erro ao limpar arquivos expirados | Exception: {type(e).__name__} | {str(e)}")
     
     logger.info("=" * 80)
     logger.info("✅ STARTUP: COD5 Watermark Worker iniciado com sucesso!")

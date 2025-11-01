@@ -83,12 +83,50 @@ def get_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def cod5_log(evt: str, **data):
+def humanize_log_message(evt: str, data: dict) -> str:
     """
-    Emite log estruturado em formato JSON line.
+    Converte eventos técnicos em mensagens humanizadas e legíveis.
+    
+    Args:
+        evt: Nome do evento
+        data: Dados do evento
+    
+    Returns:
+        Mensagem humanizada
+    """
+    task_id = data.get("task_id", "")
+    task_prefix = f"[{task_id}] " if task_id else ""
+    
+    # Mapeamento de eventos para mensagens humanizadas
+    messages = {
+        "task.start": f"🚀 {task_prefix}Processamento iniciado",
+        "task.download_start": f"📥 {task_prefix}Baixando vídeo do Spaces...",
+        "task.download_done": f"✅ {task_prefix}Download concluído em {format_duration(data.get('duration_s', 0))}",
+        "task.extract_start": f"🎬 {task_prefix}Extraindo frames do vídeo...",
+        "task.extract_done": f"✅ {task_prefix}Extracção concluída: {data.get('frames_total', 0)} frames em {format_duration(data.get('duration_s', 0))}",
+        "task.detect_inpaint_done": f"✅ {task_prefix}Processamento de frames concluído: {data.get('frames_processed', 0)} frames, {data.get('total_detections', 0)} marcas detectadas em {format_duration(data.get('duration_s', 0))}",
+        "task.frame_read_error": f"⚠️  {task_prefix}Erro ao ler frame {data.get('frame_idx', '?')}",
+        "render.done": f"✅ {task_prefix}Renderização concluída: {data.get('size_mb', 0):.2f}MB em {format_duration(data.get('duration_s', 0))}",
+        "spaces.output": f"☁️  {task_prefix}Upload para Spaces concluído em {format_duration(data.get('duration_s', 0))}",
+        "task.complete": f"🎉 {task_prefix}Processamento concluído com sucesso em {format_duration(data.get('total_duration_s', 0))}",
+        "task.error": f"❌ {task_prefix}Erro no processamento: {data.get('error', 'Erro desconhecido')}",
+        "webhook.post_done": f"📢 {task_prefix}Webhook enviado com sucesso",
+        "webhook.post_error": f"⚠️  {task_prefix}Erro ao enviar webhook: {data.get('error', 'Erro desconhecido')}",
+        "env.device": f"⚙️  Device: {data.get('requested', '?')} → {data.get('effective', '?')}",
+        "task.params": f"⚙️  {task_prefix}Parâmetros configurados",
+    }
+    
+    # Retorna mensagem humanizada ou evento original
+    return messages.get(evt, f"{evt} {data}")
+
+
+def cod5_log(evt: str, humanize: bool = True, **data):
+    """
+    Emite log estruturado em formato JSON line e opcionalmente humanizado.
     
     Args:
         evt: Nome do evento (ex: "task.start", "webhook.post")
+        humanize: Se True, também emite mensagem humanizada
         **data: Dados adicionais do evento
     
     Exemplo:
@@ -99,5 +137,12 @@ def cod5_log(evt: str, **data):
         "timestamp": get_timestamp(),
         **data
     }
+    
+    # Sempre emite log estruturado (JSON)
     cod5_logger.info(json.dumps(log_entry))
+    
+    # Se humanize=True, também emite mensagem humanizada
+    if humanize:
+        humanized_msg = humanize_log_message(evt, data)
+        cod5_logger.info(humanized_msg)
 
