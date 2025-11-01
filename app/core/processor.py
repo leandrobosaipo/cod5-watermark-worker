@@ -315,27 +315,141 @@ def process_video(task_id: str, local_file_path: str, spaces_key: str, params: D
     try:
         cod5_log("task.start", task_id=task_id, spaces_key=spaces_key, local_file_path=local_file_path)
         
+        # Verifica disponibilidade do CDN antes do upload
+        status_manager.update(
+            task_id,
+            status="processing",
+            stage="checking_cdn",
+            progress=3,
+            log_excerpt="Verificando disponibilidade do CDN..."
+        )
+        cod5_log("cdn.check_start", task_id=task_id)
+        
+        cdn_status = storage.check_cdn_availability()
+        cod5_log(
+            "cdn.check_done",
+            task_id=task_id,
+            available=cdn_status["available"],
+            bucket_accessible=cdn_status["bucket_accessible"],
+            folder_active=cdn_status["folder_active"],
+            error=cdn_status.get("error")
+        )
+        
+        # Log detalhado do status do CDN
+        logger.info(
+            f"☁️  CDN_STATUS: "
+            f"Bucket={cdn_status['details']['bucket']} | "
+            f"Folder={cdn_status['details']['folder_prefix']} | "
+            f"BucketAccessible={cdn_status['bucket_accessible']} | "
+            f"FolderActive={cdn_status['folder_active']} | "
+            f"Available={cdn_status['available']} | "
+            f"Error={cdn_status.get('error', 'None')} | "
+            f"task_id={task_id}"
+        )
+        
+        if not cdn_status["available"]:
+            error_msg = f"CDN não está disponível: {cdn_status.get('error', 'Erro desconhecido')}"
+            logger.error(f"❌ CDN: {error_msg} | task_id={task_id}")
+            # Não bloqueia o processamento, apenas loga o erro
+            # O upload ainda será tentado
+        
         # Primeiro passo: Upload para Spaces (assíncrono)
         status_manager.update(
             task_id,
             status="processing",
             stage="uploading",
             progress=5,
-            log_excerpt="Fazendo upload para Spaces..."
+            log_excerpt=f"Fazendo upload para Spaces... (CDN: {'OK' if cdn_status['available'] else 'AVISO'})"
         )
-        cod5_log("task.upload_start", task_id=task_id)
+        cod5_log("task.upload_start", task_id=task_id, cdn_status=cdn_status)
         
         upload_start = time.time()
-        spaces_url = storage.upload_file(local_file_path, spaces_key)
-        upload_duration = time.time() - upload_start
+        file_size_mb = os.path.getsize(local_file_path) / (1024 * 1024) if os.path.exists(local_file_path) else 0
         
-        # Atualiza status com spaces_input após upload bem-sucedido
-        status_manager.update(
-            task_id,
-            spaces_input=spaces_url,
-            log_excerpt="Upload para Spaces concluído. Iniciando processamento..."
-        )
-        cod5_log("task.upload_done", task_id=task_id, duration_s=upload_duration, spaces_url=spaces_url)
+        try:
+            spaces_url = storage.upload_file(local_file_path, spaces_key)
+            upload_duration = time.time() - upload_start
+            
+            logger.info(
+                f"📤 UPLOAD: Upload concluído | "
+                f"Duration: {upload_duration:.2f}s | "
+                f"Size: {file_size_mb:.2f}MB | "
+                f"Speed: {file_size_mb / upload_duration:.2f}MB/s | "
+                f"URL: {spaces_url} | "
+                f"task_id={task_id}"
+            )
+            
+            # Verifica se upload foi bem-sucedido e arquivo está acessível
+            status_manager.update(
+                task_id,
+                stage="verifying_upload",
+                progress=7,
+                log_excerpt="Verificando upload no CDN..."
+            )
+            cod5_log("upload.verify_start", task_id=task_id, url=spaces_url)
+            
+            verify_result = storage.verify_upload(spaces_key)
+            cod5_log(
+                "upload.verify_done",
+                task_id=task_id,
+                uploaded=verify_result["uploaded"],
+                accessible=verify_result["accessible"],
+                url=verify_result["url"],
+                size=verify_result.get("size"),
+                error=verify_result.get("error")
+            )
+            
+            if not verify_result["uploaded"]:
+                error_msg = f"Upload falhou: arquivo não encontrado no Spaces | {verify_result.get('error', '')}"
+                logger.error(f"❌ UPLOAD: {error_msg} | task_id={task_id}")
+                raise RuntimeError(error_msg)
+            
+            if not verify_result["accessible"]:
+                logger.warning(
+                    f"⚠️  UPLOAD: Arquivo existe mas URL não está acessível | "
+                    f"URL: {verify_result['url']} | "
+                    f"Erro: {verify_result.get('error', '')} | "
+                    f"task_id={task_id}"
+                )
+            
+            # Atualiza status com spaces_input após upload e verificação bem-sucedidos
+            status_manager.update(
+                task_id,
+                spaces_input=spaces_url,
+                log_excerpt=f"Upload concluído e verificado. CDN: {'OK' if verify_result['accessible'] else 'AVISO'} | Iniciando processamento..."
+            )
+            cod5_log(
+                "task.upload_done",
+                task_id=task_id,
+                duration_s=upload_duration,
+                spaces_url=spaces_url,
+                verified=True,
+                accessible=verify_result["accessible"]
+            )
+            
+            # Inicializa performance_metrics após upload bem-sucedido
+            performance_metrics = {
+                "upload_time": upload_duration
+            }
+            
+        except Exception as upload_error:
+            upload_duration = time.time() - upload_start
+            logger.error(
+                f"❌ UPLOAD: Erro durante upload | "
+                f"Duration: {upload_duration:.2f}s | "
+                f"Size: {file_size_mb:.2f}MB | "
+                f"Exception: {type(upload_error).__name__} | "
+                f"Error: {str(upload_error)} | "
+                f"task_id={task_id}"
+            )
+            cod5_log(
+                "task.upload_error",
+                task_id=task_id,
+                duration_s=upload_duration,
+                error=str(upload_error),
+                error_type=type(upload_error).__name__
+            )
+            raise
         
         # Verifica se arquivo local existe e é válido
         if not os.path.exists(local_file_path):
@@ -344,9 +458,9 @@ def process_video(task_id: str, local_file_path: str, spaces_key: str, params: D
         # Usa arquivo local diretamente (não precisa fazer download)
         local_video = local_file_path
         
-        performance_metrics = {
-            "upload_time": upload_duration
-        }
+        # performance_metrics será inicializado após upload bem-sucedido (dentro do try)
+        if 'performance_metrics' not in locals():
+            performance_metrics = {}
         
         # Configurações efetivas
         conf = settings.validate_yolo_conf(params.get('override_conf'))

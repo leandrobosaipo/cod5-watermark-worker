@@ -59,7 +59,16 @@ class SpacesStorage:
         Returns:
             URL pública do arquivo
         """
+        import os
+        import time
+        
+        upload_start = time.time()
+        
         try:
+            # Verifica tamanho do arquivo para log
+            file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            file_size_mb = file_size / (1024 * 1024) if file_size > 0 else 0
+            
             # Se key não começa com prefixo e use_prefix=True, assume formato folder/filename
             if use_prefix and not key.startswith(settings.SPACES_FOLDER_PREFIX):
                 # Detecta folder e filename da key
@@ -73,15 +82,58 @@ class SpacesStorage:
             else:
                 full_key = key
             
+            logger.info(
+                f"📤 UPLOAD_START: Iniciando upload para Spaces | "
+                f"File: {os.path.basename(file_path)} | "
+                f"Size: {file_size_mb:.2f}MB | "
+                f"Key: {full_key} | "
+                f"Bucket: {self.bucket}"
+            )
+            
             self.client.upload_file(
                 file_path,
                 self.bucket,
                 full_key,
                 ExtraArgs={'ACL': acl}
             )
-            return self.public_url(full_key)
+            
+            upload_duration = time.time() - upload_start
+            public_url = self.public_url(full_key)
+            
+            logger.info(
+                f"✅ UPLOAD_DONE: Upload concluído com sucesso | "
+                f"Duration: {upload_duration:.2f}s | "
+                f"Size: {file_size_mb:.2f}MB | "
+                f"Speed: {file_size_mb / upload_duration:.2f}MB/s | "
+                f"URL: {public_url} | "
+                f"Key: {full_key}"
+            )
+            
+            return public_url
+            
         except ClientError as e:
-            logger.error(f"Erro ao fazer upload para Spaces: {e}")
+            upload_duration = time.time() - upload_start
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            error_msg = e.response.get('Error', {}).get('Message', str(e))
+            
+            logger.error(
+                f"❌ UPLOAD_ERROR: Erro ao fazer upload para Spaces | "
+                f"Duration: {upload_duration:.2f}s | "
+                f"Key: {full_key if 'full_key' in locals() else key} | "
+                f"Bucket: {self.bucket} | "
+                f"ErrorCode: {error_code} | "
+                f"ErrorMessage: {error_msg}"
+            )
+            raise
+        except Exception as e:
+            upload_duration = time.time() - upload_start
+            logger.error(
+                f"❌ UPLOAD_ERROR: Erro inesperado durante upload | "
+                f"Duration: {upload_duration:.2f}s | "
+                f"Key: {full_key if 'full_key' in locals() else key} | "
+                f"Exception: {type(e).__name__} | "
+                f"Error: {str(e)}"
+            )
             raise
     
     def upload_bytes(self, data: bytes, key: str, acl: str = "public-read", use_prefix: bool = True) -> str:
@@ -298,6 +350,151 @@ class SpacesStorage:
         except ClientError as e:
             logger.error(f"Erro ao marcar arquivo para expiração: {e}")
             # Não raise para não quebrar o fluxo
+    
+    def check_cdn_availability(self) -> dict:
+        """
+        Verifica disponibilidade completa do CDN.
+        
+        Returns:
+            Dict com status do CDN:
+            {
+                "available": bool,
+                "bucket_accessible": bool,
+                "folder_active": bool,
+                "error": Optional[str],
+                "details": {
+                    "bucket": str,
+                    "folder_prefix": str,
+                    "endpoint": str
+                }
+            }
+        """
+        result = {
+            "available": False,
+            "bucket_accessible": False,
+            "folder_active": False,
+            "error": None,
+            "details": {
+                "bucket": self.bucket,
+                "folder_prefix": settings.SPACES_FOLDER_PREFIX,
+                "endpoint": settings.SPACES_ENDPOINT
+            }
+        }
+        
+        try:
+            # Testa conexão básica com o bucket
+            self.client.head_bucket(Bucket=self.bucket)
+            result["bucket_accessible"] = True
+            logger.info(f"✅ CDN: Bucket '{self.bucket}' está acessível")
+            
+            # Verifica se a pasta/prefixo está acessível (lista objetos)
+            try:
+                prefix = f"{settings.SPACES_FOLDER_PREFIX}/"
+                response = self.client.list_objects_v2(
+                    Bucket=self.bucket,
+                    Prefix=prefix,
+                    MaxKeys=1
+                )
+                # Se consegue listar (mesmo vazio), a pasta está ativa
+                result["folder_active"] = True
+                logger.info(f"✅ CDN: Pasta '{prefix}' está ativa e acessível")
+            except ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                if error_code == 'AccessDenied':
+                    result["error"] = f"Acesso negado à pasta '{prefix}'"
+                    logger.warning(f"⚠️  CDN: Acesso negado à pasta '{prefix}' | Erro: {error_code}")
+                else:
+                    # Pode ser que a pasta não exista ainda (normal em primeiro uso)
+                    logger.info(f"ℹ️  CDN: Pasta '{prefix}' não existe ainda (será criada no primeiro upload)")
+                    result["folder_active"] = True  # Assume que está OK se é primeira vez
+            
+            result["available"] = result["bucket_accessible"]
+            
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            error_msg = e.response.get('Error', {}).get('Message', str(e))
+            result["error"] = f"Erro ao verificar CDN: {error_code} - {error_msg}"
+            logger.error(f"❌ CDN: Erro ao verificar disponibilidade | Código: {error_code} | Mensagem: {error_msg}")
+        except Exception as e:
+            result["error"] = f"Erro inesperado: {str(e)}"
+            logger.error(f"❌ CDN: Erro inesperado ao verificar CDN | Exception: {type(e).__name__} | {str(e)}")
+        
+        return result
+    
+    def verify_upload(self, key: str, use_prefix: bool = True, timeout: int = 5) -> dict:
+        """
+        Verifica se o upload foi bem-sucedido e o arquivo está acessível.
+        
+        Args:
+            key: Chave do arquivo no Spaces
+            use_prefix: Se True, aplica prefixo automaticamente
+            timeout: Timeout em segundos para verificação HTTP
+        
+        Returns:
+            Dict com status da verificação:
+            {
+                "uploaded": bool,
+                "accessible": bool,
+                "url": str,
+                "size": Optional[int],
+                "error": Optional[str]
+            }
+        """
+        import requests
+        
+        result = {
+            "uploaded": False,
+            "accessible": False,
+            "url": None,
+            "size": None,
+            "error": None
+        }
+        
+        try:
+            # Resolve chave completa
+            if use_prefix and not key.startswith(settings.SPACES_FOLDER_PREFIX):
+                parts = key.split('/', 1)
+                if len(parts) == 2:
+                    folder, filename = parts
+                    full_key = self._make_key(folder, filename)
+                else:
+                    full_key = self._make_key("uploads", parts[0])
+            else:
+                full_key = key
+            
+            # Verifica se arquivo existe no Spaces
+            try:
+                response = self.client.head_object(Bucket=self.bucket, Key=full_key)
+                result["uploaded"] = True
+                result["size"] = response.get('ContentLength')
+                logger.info(f"✅ VERIFY: Arquivo existe no Spaces | Key: {full_key} | Size: {result['size']} bytes")
+            except ClientError as e:
+                result["error"] = f"Arquivo não encontrado no Spaces: {str(e)}"
+                logger.error(f"❌ VERIFY: Arquivo não encontrado | Key: {full_key} | Erro: {str(e)}")
+                return result
+            
+            # Gera URL pública
+            public_url = self.public_url(full_key)
+            result["url"] = public_url
+            
+            # Verifica se URL está acessível via HTTP
+            try:
+                http_response = requests.head(public_url, timeout=timeout, allow_redirects=True)
+                if http_response.status_code == 200:
+                    result["accessible"] = True
+                    logger.info(f"✅ VERIFY: URL pública está acessível | URL: {public_url} | Status: {http_response.status_code}")
+                else:
+                    result["error"] = f"URL retornou status {http_response.status_code}"
+                    logger.warning(f"⚠️  VERIFY: URL retornou status inesperado | URL: {public_url} | Status: {http_response.status_code}")
+            except requests.RequestException as e:
+                result["error"] = f"Erro ao verificar URL: {str(e)}"
+                logger.warning(f"⚠️  VERIFY: Erro ao verificar URL pública | URL: {public_url} | Erro: {str(e)}")
+            
+        except Exception as e:
+            result["error"] = f"Erro inesperado: {str(e)}"
+            logger.error(f"❌ VERIFY: Erro inesperado | Exception: {type(e).__name__} | {str(e)}")
+        
+        return result
     
     def cleanup_expired_files(self) -> List[str]:
         """

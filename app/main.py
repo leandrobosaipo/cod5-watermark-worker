@@ -15,7 +15,8 @@ from .core.utils import (
     generate_task_id,
     generate_request_id,
     validate_file,
-    sanitize_filename
+    sanitize_filename,
+    cod5_log
 )
 from .core.storage import storage
 from .core.status import status_manager
@@ -65,6 +66,16 @@ class SubmitResponse(BaseModel):
     status: str = Field(..., example="queued", description="Status inicial da tarefa")
     message: str = Field(..., example="Video received. Processing will start soon.", description="Mensagem descritiva")
     spaces_input: str = Field(..., example="https://cod5.nyc3.digitaloceanspaces.com/uploads/cod5_1730389012.mp4", description="URL do vídeo enviado")
+    cdn_status: dict = Field(
+        ...,
+        description="Status do CDN (DigitalOcean Spaces)",
+        example={
+            "available": True,
+            "bucket_accessible": True,
+            "folder_active": True,
+            "error": None
+        }
+    )
 
 
 class TaskResponse(BaseModel):
@@ -306,6 +317,38 @@ async def submit_remove_task(
             full_key = f"{settings.SPACES_FOLDER_PREFIX}/{spaces_key}".replace("//", "/").lstrip("/")
             expected_spaces_url = storage.public_url(full_key)
             
+            # Verifica disponibilidade do CDN antes de enfileirar tarefa
+            logger.info(f"☁️  CDN_CHECK: Verificando disponibilidade do CDN antes de enfileirar tarefa | task_id={task_id}")
+            cdn_status = storage.check_cdn_availability()
+            cod5_log(
+                "cdn.check",
+                task_id=task_id,
+                available=cdn_status["available"],
+                bucket_accessible=cdn_status["bucket_accessible"],
+                folder_active=cdn_status["folder_active"],
+                error=cdn_status.get("error")
+            )
+            
+            # Log detalhado do status do CDN
+            logger.info(
+                f"☁️  CDN_STATUS: "
+                f"Available={cdn_status['available']} | "
+                f"BucketAccessible={cdn_status['bucket_accessible']} | "
+                f"FolderActive={cdn_status['folder_active']} | "
+                f"Error={cdn_status.get('error', 'None')} | "
+                f"Bucket={cdn_status['details']['bucket']} | "
+                f"Folder={cdn_status['details']['folder_prefix']} | "
+                f"task_id={task_id}"
+            )
+            
+            # Se CDN não está disponível, loga aviso mas ainda permite enfileirar (tentará novamente no processamento)
+            if not cdn_status["available"]:
+                logger.warning(
+                    f"⚠️  CDN: CDN não está disponível, mas tarefa será enfileirada | "
+                    f"Erro: {cdn_status.get('error', '')} | "
+                    f"task_id={task_id}"
+                )
+            
             # Cria status inicial sem spaces_input (será preenchido após upload assíncrono)
             status_manager.create(
                 task_id,
@@ -364,9 +407,20 @@ async def submit_remove_task(
                 "task_id": task_id,
                 "status": "queued",
                 "message": "Video received. Uploading to Spaces and processing will start soon.",
-                "spaces_input": expected_spaces_url  # URL esperada, será atualizada após upload assíncrono
+                "spaces_input": expected_spaces_url,  # URL esperada, será atualizada após upload assíncrono
+                "cdn_status": {
+                    "available": cdn_status["available"],
+                    "bucket_accessible": cdn_status["bucket_accessible"],
+                    "folder_active": cdn_status["folder_active"],
+                    "error": cdn_status.get("error")
+                }
             }
-            logger.info(f"✅ SUCCESS: Upload recebido com sucesso | task_id={task_id} | Upload para Spaces será feito assincronamente")
+            logger.info(
+                f"✅ SUCCESS: Upload recebido com sucesso | "
+                f"task_id={task_id} | "
+                f"CDN: {'OK' if cdn_status['available'] else 'AVISO'} | "
+                f"Upload para Spaces será feito assincronamente"
+            )
             return result
         
         except Exception as inner_e:
