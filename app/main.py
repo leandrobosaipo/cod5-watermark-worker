@@ -310,15 +310,11 @@ async def submit_remove_task(
             except Exception as e:
                 logger.warning(f"⚠️  METADATA: Erro ao capturar metadados do vídeo | Exception: {type(e).__name__} | {str(e)} | task_id={task_id}")
             
-            # Gera URL esperada (antes do upload real, será atualizada após upload assíncrono)
+            # Gera chave do Spaces
             spaces_key = f"uploads/{task_id}.mp4"
-            # Construir URL esperada usando mesmo formato do storage
-            # Usa método privado _make_key para gerar a chave completa
-            full_key = f"{settings.SPACES_FOLDER_PREFIX}/{spaces_key}".replace("//", "/").lstrip("/")
-            expected_spaces_url = storage.public_url(full_key)
             
-            # Verifica disponibilidade do CDN antes de enfileirar tarefa
-            logger.info(f"☁️  CDN_CHECK: Verificando disponibilidade do CDN antes de enfileirar tarefa | task_id={task_id}")
+            # Verifica disponibilidade do CDN ANTES de fazer upload
+            logger.info(f"☁️  CDN_CHECK: Verificando disponibilidade do CDN antes de fazer upload | task_id={task_id}")
             cdn_status = storage.check_cdn_availability()
             cod5_log(
                 "cdn.check",
@@ -341,25 +337,100 @@ async def submit_remove_task(
                 f"task_id={task_id}"
             )
             
-            # Se CDN não está disponível, loga aviso mas ainda permite enfileirar (tentará novamente no processamento)
+            # Se CDN não está disponível, retorna erro imediatamente
             if not cdn_status["available"]:
-                logger.warning(
-                    f"⚠️  CDN: CDN não está disponível, mas tarefa será enfileirada | "
-                    f"Erro: {cdn_status.get('error', '')} | "
-                    f"task_id={task_id}"
+                error_msg = f"CDN não está disponível: {cdn_status.get('error', 'Erro desconhecido')}"
+                logger.error(f"❌ CDN: {error_msg} | task_id={task_id}")
+                # Remove arquivo temporário
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Serviço de armazenamento temporariamente indisponível: {error_msg}"
                 )
             
-            # Cria status inicial sem spaces_input (será preenchido após upload assíncrono)
+            # Cria status inicial (antes do upload)
             status_manager.create(
                 task_id,
-                status="queued",
+                status="uploading",
                 stage="uploading",
                 progress=0,
-                spaces_input=None,  # Será atualizado após upload assíncrono
+                spaces_input=None,  # Será atualizado após upload bem-sucedido
                 message="Video received. Uploading to Spaces...",
                 video_metadata=video_metadata
             )
-            logger.info(f"📊 STATUS: Status inicial criado | task_id={task_id} | status=queued")
+            logger.info(f"📊 STATUS: Status inicial criado | task_id={task_id} | status=uploading")
+            
+            # FAZ UPLOAD IMEDIATO PARA SPACES (síncrono, rápido)
+            logger.info(f"📤 UPLOAD_SYNC: Iniciando upload imediato para Spaces | task_id={task_id}")
+            import time
+            upload_start = time.time()
+            
+            try:
+                spaces_url = storage.upload_file(tmp_path, spaces_key)
+                upload_duration = time.time() - upload_start
+                
+                logger.info(
+                    f"✅ UPLOAD_SYNC: Upload concluído com sucesso | "
+                    f"Duration: {upload_duration:.2f}s | "
+                    f"URL: {spaces_url} | "
+                    f"task_id={task_id}"
+                )
+                
+                # Verifica se upload foi bem-sucedido
+                verify_result = storage.verify_upload(spaces_key)
+                if not verify_result["uploaded"]:
+                    error_msg = f"Upload falhou: arquivo não encontrado no Spaces | {verify_result.get('error', '')}"
+                    logger.error(f"❌ UPLOAD_VERIFY: {error_msg} | task_id={task_id}")
+                    raise HTTPException(status_code=500, detail=error_msg)
+                
+                # Atualiza status com spaces_input após upload bem-sucedido
+                status_manager.update(
+                    task_id,
+                    status="queued",
+                    spaces_input=spaces_url,
+                    message="Video uploaded successfully. Processing will start soon.",
+                    log_excerpt="Upload para Spaces concluído com sucesso"
+                )
+                logger.info(f"✅ STATUS: Status atualizado com spaces_input | task_id={task_id} | URL: {spaces_url}")
+                
+                # Remove arquivo temporário após upload bem-sucedido
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                        logger.debug(f"🗑️  CLEANUP: Arquivo temporário removido após upload | path={tmp_path}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"⚠️  CLEANUP: Erro ao remover arquivo temporário | path={tmp_path} | Erro: {cleanup_error}")
+                
+            except HTTPException:
+                # Re-raise HTTP exceptions
+                raise
+            except Exception as upload_error:
+                upload_duration = time.time() - upload_start
+                error_msg = f"Erro ao fazer upload para Spaces: {str(upload_error)}"
+                logger.error(
+                    f"❌ UPLOAD_ERROR: {error_msg} | "
+                    f"Duration: {upload_duration:.2f}s | "
+                    f"Exception: {type(upload_error).__name__} | "
+                    f"task_id={task_id}"
+                )
+                # Remove arquivo temporário em caso de erro
+                if os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except:
+                        pass
+                # Atualiza status para erro
+                status_manager.update(
+                    task_id,
+                    status="error",
+                    error_detail=error_msg,
+                    message=f"Erro ao fazer upload: {error_msg}"
+                )
+                raise HTTPException(status_code=500, detail=error_msg)
             
             # Parâmetros do processamento
             # Valida e sanitiza webhook_url
@@ -399,15 +470,15 @@ async def submit_remove_task(
             )
             
             # Enfileira tarefa (Celery ou fallback ThreadPool)
-            # Passa caminho local do arquivo ao invés de spaces_key (upload será feito assincronamente)
-            enqueue_video_processing(task_id, tmp_path, spaces_key, params)
+            # Passa spaces_url ao invés de local_file_path (upload já foi feito)
+            enqueue_video_processing(task_id, spaces_url, spaces_key, params)
             logger.info(f"🔄 QUEUE: Tarefa enfileirada | task_id={task_id}")
             
             result = {
                 "task_id": task_id,
                 "status": "queued",
-                "message": "Video received. Uploading to Spaces and processing will start soon.",
-                "spaces_input": expected_spaces_url,  # URL esperada, será atualizada após upload assíncrono
+                "message": "Video uploaded successfully. Processing will start soon.",
+                "spaces_input": spaces_url,  # URL real do arquivo no Spaces
                 "cdn_status": {
                     "available": cdn_status["available"],
                     "bucket_accessible": cdn_status["bucket_accessible"],
@@ -416,13 +487,16 @@ async def submit_remove_task(
                 }
             }
             logger.info(
-                f"✅ SUCCESS: Upload recebido com sucesso | "
+                f"✅ SUCCESS: Upload e enfileiramento concluídos | "
                 f"task_id={task_id} | "
-                f"CDN: {'OK' if cdn_status['available'] else 'AVISO'} | "
-                f"Upload para Spaces será feito assincronamente"
+                f"CDN: OK | "
+                f"URL: {spaces_url}"
             )
             return result
         
+        except HTTPException:
+            # HTTP exceptions já tratadas acima, apenas re-raise
+            raise
         except Exception as inner_e:
             # Se houve erro antes de enfileirar, remove arquivo temporário
             if os.path.exists(tmp_path):
@@ -431,8 +505,17 @@ async def submit_remove_task(
                     logger.debug(f"🗑️  CLEANUP: Arquivo temporário removido após erro | path={tmp_path}")
                 except:
                     pass
+            # Se status foi criado, atualiza para erro
+            try:
+                status_manager.update(
+                    task_id,
+                    status="error",
+                    error_detail=str(inner_e),
+                    message=f"Erro ao processar upload: {str(inner_e)}"
+                )
+            except:
+                pass
             raise inner_e
-        # NÃO remove arquivo temporário aqui se tudo deu certo - será removido após upload para Spaces no processamento assíncrono
     
     except HTTPException as e:
         logger.warning(f"⚠️  HTTP_ERROR: {e.status_code} | Detail: {e.detail}")
