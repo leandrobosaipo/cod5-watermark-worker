@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, Query, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
+from pydantic import BaseModel, Field, HttpUrl
 import tempfile
 
 from .core.config import settings
@@ -56,6 +57,45 @@ app.add_middleware(
 )
 
 
+# Schemas Pydantic para request/response
+class SubmitResponse(BaseModel):
+    """Resposta do endpoint de upload."""
+    task_id: str = Field(..., example="cod5_1730389012", description="ID único da tarefa")
+    status: str = Field(..., example="queued", description="Status inicial da tarefa")
+    message: str = Field(..., example="Video received. Processing will start soon.", description="Mensagem descritiva")
+    spaces_input: str = Field(..., example="https://cod5.nyc3.digitaloceanspaces.com/uploads/cod5_1730389012.mp4", description="URL do vídeo enviado")
+
+
+class TaskResponse(BaseModel):
+    """Resposta completa de status de tarefa."""
+    task_id: str
+    status: str
+    progress: int
+    stage: str
+    started_at: Optional[str]
+    updated_at: Optional[str]
+    duration_seconds: float
+    model_used: Optional[str]
+    frames_total: Optional[int]
+    frames_done: Optional[int]
+    spaces_input: Optional[str]
+    spaces_output: Optional[str]
+    log_excerpt: str
+    message: str
+    params_effective: dict
+    error_detail: Optional[str]
+    webhook_status: Optional[int]
+    webhook_error: Optional[str]
+
+
+class TaskListItem(BaseModel):
+    """Item da lista de tarefas."""
+    task_id: str
+    status: str
+    progress: int
+    updated_at: Optional[str]
+
+
 @app.middleware("http")
 async def add_request_id(request, call_next):
     """Adiciona request_id a todas as requisições."""
@@ -95,24 +135,45 @@ async def root():
     }
 
 
-@app.post("/submit_remove_task")
+@app.post(
+    "/submit_remove_task",
+    summary="Inicia uma tarefa de processamento de vídeo",
+    description=(
+        "Recebe um vídeo e cria uma tarefa assíncrona para remoção de marcas d'água. "
+        "**Atenção**: Parâmetros override são opcionais e validados. "
+        "Webhook (se informado) recebe POST ao final (sucesso/erro). "
+        "Valores inválidos retornam erro 422 com detalhes descritivos."
+    ),
+    response_model=SubmitResponse,
+)
 async def submit_remove_task(
-    file: UploadFile = File(...),
-    override_conf: Optional[float] = Form(None),
-    override_mask_expand: Optional[int] = Form(None),
-    override_frame_stride: Optional[int] = Form(None),
-    webhook_url: Optional[str] = Form(None)
+    file: UploadFile = File(..., description="Vídeo .mp4|.mov|.avi (até MAX_FILE_MB)", example="video.mp4"),
+    override_conf: Optional[float] = Form(
+        None,
+        ge=0.05,
+        le=0.8,
+        description="(opcional) Threshold do detector YOLO [0.05–0.8]. Valores menores detectam mais ruídos, maiores podem perder marcas.",
+        example=0.25
+    ),
+    override_mask_expand: Optional[int] = Form(
+        None,
+        ge=0,
+        le=128,
+        description="(opcional) Expansão da máscara em pixels [0–128]. Valores maiores cobrem mais área ao redor da detecção.",
+        example=18
+    ),
+    override_frame_stride: Optional[int] = Form(
+        None,
+        ge=1,
+        description="(opcional) Intervalo de frames para processamento (≥1). 1=processa todos, 2=metade, etc. Aumenta velocidade mas reduz precisão.",
+        example=1
+    ),
+    webhook_url: Optional[str] = Form(
+        None,
+        description="(opcional) URL que receberá POST ao finalizar (sucesso ou erro). Deve ser URL válida com protocolo.",
+        example="https://exemplo.com/meu-webhook"
+    )
 ):
-    """
-    Recebe vídeo, envia para Spaces e enfileira processamento.
-    
-    Form-Data:
-        - file: Vídeo (obrigatório)
-        - override_conf: Confiança YOLO (0.05-0.8)
-        - override_mask_expand: Pixels para expandir máscara
-        - override_frame_stride: Intervalo entre frames (≥1)
-        - webhook_url: URL para POST ao concluir/erro
-    """
     try:
         logger.info("📤 RECEIVED: Upload de vídeo iniciado")
         
@@ -207,8 +268,13 @@ async def submit_remove_task(
         raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
 
 
-@app.get("/get_results")
-async def get_results(task_id: str = Query(..., description="ID da tarefa")):
+@app.get(
+    "/get_results",
+    summary="Retorna status detalhado de uma tarefa",
+    description="Consulta o status atual de uma tarefa, incluindo progresso, estágio, parâmetros efetivos e URLs de input/output.",
+    response_model=TaskResponse,
+)
+async def get_results(task_id: str = Query(..., description="ID da tarefa", example="cod5_1730389012")):
     """
     Retorna status detalhado de uma tarefa.
     
@@ -263,8 +329,13 @@ async def download_task(task_id: str):
     return RedirectResponse(url=status.spaces_output, status_code=302)
 
 
-@app.get("/tasks")
-async def list_tasks(limit: int = Query(50, ge=1, le=100, description="Limite de tarefas")):
+@app.get(
+    "/tasks",
+    summary="Lista tarefas recentes",
+    description="Retorna lista resumida das tarefas mais recentes ordenadas por atualização (descendente).",
+    response_model=list[TaskListItem],
+)
+async def list_tasks(limit: int = Query(50, ge=1, le=100, description="Limite de tarefas", example=50)):
     """
     Lista tarefas recentes.
     

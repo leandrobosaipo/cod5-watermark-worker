@@ -12,7 +12,7 @@ import torch
 from .config import settings
 from .storage import storage
 from .status import status_manager
-from .utils import get_timestamp
+from .utils import get_timestamp, cod5_log
 
 logger = logging.getLogger(__name__)
 
@@ -286,9 +286,7 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
     start_time = time.time()
     
     try:
-        logger.info("=" * 80)
-        logger.info(f"🎬 PROCESS: Iniciando processamento de vídeo | task_id={task_id}")
-        logger.info(f"   Spaces Key: {spaces_key}")
+        cod5_log("task.start", task_id=task_id, spaces_key=spaces_key)
         
         # Atualiza status: processing
         status_manager.update(
@@ -298,7 +296,7 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             progress=5,
             log_excerpt="Baixando vídeo do Spaces..."
         )
-        logger.info(f"📥 DOWNLOAD: Baixando vídeo do Spaces... | task_id={task_id}")
+        cod5_log("task.download_start", task_id=task_id)
         
         # Configurações efetivas
         conf = settings.validate_yolo_conf(params.get('override_conf'))
@@ -313,10 +311,24 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
         frame_stride = max(1, int(override_frame_stride)) if override_frame_stride is not None else settings.FRAME_STRIDE
         device = settings.validate_device()
         
-        logger.info(
-            f"⚙️  CONFIG: Configurações de processamento | "
-            f"conf={conf} | iou={iou} | mask_expand={mask_expand} | "
-            f"frame_stride={frame_stride} | device={device} | task_id={task_id}"
+        # Registra device efetivo e versão ultralytics
+        try:
+            import ultralytics
+            ultralytics_version = ultralytics.__version__
+        except:
+            ultralytics_version = "unknown"
+        
+        cod5_log("env.device", requested=settings.TORCH_DEVICE, effective=device, ultralytics_version=ultralytics_version)
+        cod5_log(
+            "task.params",
+            task_id=task_id,
+            params_effective={
+                "yolo_conf": conf,
+                "yolo_iou": iou,
+                "mask_expand": mask_expand,
+                "frame_stride": frame_stride,
+                "torch_device": device
+            }
         )
         
         status_manager.update(
@@ -338,7 +350,7 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             download_start = time.time()
             storage.download_file(spaces_key, local_video)
             download_duration = time.time() - download_start
-            logger.info(f"✅ DOWNLOAD: Vídeo baixado | Duration: {download_duration:.2f}s | task_id={task_id}")
+            cod5_log("task.download_done", task_id=task_id, duration_s=download_duration)
             
             # Extração de frames
             status_manager.update(
@@ -347,7 +359,7 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 progress=10,
                 log_excerpt="Extraindo frames do vídeo..."
             )
-            logger.info(f"🎞️  EXTRACT: Iniciando extração de frames... | task_id={task_id}")
+            cod5_log("task.extract_start", task_id=task_id)
             
             frames_dir = os.path.join(temp_dir, "frames")
             os.makedirs(frames_dir, exist_ok=True)
@@ -357,16 +369,11 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             probe = ffmpeg.probe(local_video)
             video_info = next(s for s in probe['streams'] if s['codec_type'] == 'video')
             fps = eval(video_info['r_frame_rate'])
-            logger.info(f"📊 VIDEO_INFO: FPS detectado: {fps} | task_id={task_id}")
             
             extract_start = time.time()
             total_frames, frame_files = extract_frames(local_video, frames_dir, stride=frame_stride)
             extract_duration = time.time() - extract_start
-            logger.info(
-                f"✅ EXTRACT: Frames extraídos | "
-                f"Total: {total_frames} | Stride: {frame_stride} | "
-                f"Duration: {extract_duration:.2f}s | task_id={task_id}"
-            )
+            cod5_log("task.extract_done", task_id=task_id, frames_total=total_frames, frame_stride=frame_stride, duration_s=extract_duration, fps=fps)
             status_manager.update(
                 task_id,
                 frames_total=total_frames,
@@ -375,8 +382,6 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 progress=15,
                 log_excerpt=f"Detectando marcas d'água em {total_frames} frames..."
             )
-            
-            logger.info(f"🔍 DETECT: Iniciando detecção de marcas d'água... | task_id={task_id}")
             
             # Processa cada frame
             processed_frames_dir = os.path.join(temp_dir, "processed_frames")
@@ -391,27 +396,17 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             if len(frame_files) > 2:
                 sample_indices.append(len(frame_files) - 1)
             
-            logger.info(f"   Amostragem: {len(sample_indices)} frames | Índices: {sample_indices} | task_id={task_id}")
-            
             detect_start = time.time()
             for idx in sample_indices:
                 sample_frame = cv2.imread(frame_files[idx])
                 boxes = detect_watermarks(sample_frame, conf, iou, device)
                 all_boxes.extend(boxes)
-                logger.debug(f"   Frame {idx}: {len(boxes)} marca(s) detectada(s) | task_id={task_id}")
             
             detect_duration = time.time() - detect_start
             total_detections = len(all_boxes)
             
             # Remove duplicatas próximas (merge de boxes similares)
-            if not all_boxes:
-                logger.warning(f"⚠️  DETECT: Nenhuma marca d'água detectada nos frames de amostra | task_id={task_id}")
-            else:
-                logger.info(
-                    f"✅ DETECT: Detecção concluída | "
-                    f"Total de detecções: {total_detections} | "
-                    f"Duration: {detect_duration:.2f}s | task_id={task_id}"
-                )
+            cod5_log("task.detect_done", task_id=task_id, detections=total_detections, sample_frames=len(sample_indices), duration_s=detect_duration)
             
             # Cria máscara base a partir de todas as detecções
             if all_boxes:
@@ -430,13 +425,12 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 log_excerpt="Aplicando inpainting nos frames..."
             )
             
-            logger.info(f"🎨 INPAINT: Iniciando inpainting em {len(frame_files)} frames... | task_id={task_id}")
             inpaint_start = time.time()
             
             for idx, frame_path in enumerate(frame_files):
                 frame = cv2.imread(frame_path)
                 if frame is None:
-                    logger.warning(f"⚠️  INPAINT: Erro ao ler frame | Path: {frame_path} | task_id={task_id}")
+                    cod5_log("task.frame_read_error", task_id=task_id, frame_idx=idx)
                     continue
                 
                 # Aplica inpainting
@@ -455,10 +449,9 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                         progress=progress,
                         log_excerpt=f"Frame {idx+1}/{len(frame_files)} processado..."
                     )
-                    logger.info(f"   Progresso: {idx+1}/{len(frame_files)} frames ({progress}%) | task_id={task_id}")
             
             inpaint_duration = time.time() - inpaint_start
-            logger.info(f"✅ INPAINT: Inpainting concluído | Duration: {inpaint_duration:.2f}s | task_id={task_id}")
+            cod5_log("task.inpaint_done", task_id=task_id, frames_processed=len(frame_files), duration_s=inpaint_duration)
             
             # Renderização
             status_manager.update(
@@ -468,7 +461,6 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 log_excerpt="Renderizando vídeo final..."
             )
             
-            logger.info(f"🎬 RENDER: Iniciando renderização do vídeo final... | task_id={task_id}")
             render_start = time.time()
             
             output_video = os.path.join(temp_dir, f"{task_id}_clean.mp4")
@@ -476,10 +468,7 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             
             render_duration = time.time() - render_start
             video_size_mb = os.path.getsize(output_video) / (1024 * 1024)
-            logger.info(
-                f"✅ RENDER: Vídeo renderizado | "
-                f"Size: {video_size_mb:.2f} MB | Duration: {render_duration:.2f}s | task_id={task_id}"
-            )
+            cod5_log("render.done", task_id=task_id, size_mb=video_size_mb, duration_s=render_duration)
             
             # Upload para Spaces
             status_manager.update(
@@ -489,17 +478,13 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 log_excerpt="Enviando vídeo processado para Spaces..."
             )
             
-            logger.info(f"📤 UPLOAD: Enviando vídeo processado para Spaces... | task_id={task_id}")
             upload_start = time.time()
             
             output_key = f"outputs/{task_id}_clean.mp4"
             output_url = storage.upload_file(output_video, output_key)
             
             upload_duration = time.time() - upload_start
-            logger.info(
-                f"✅ UPLOAD: Vídeo processado enviado | "
-                f"URL: {output_url} | Duration: {upload_duration:.2f}s | task_id={task_id}"
-            )
+            cod5_log("spaces.output", task_id=task_id, url=output_url, duration_s=upload_duration)
             
             # Finaliza
             total_duration = time.time() - start_time
@@ -513,39 +498,40 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
                 log_excerpt="Processamento concluído!"
             )
             
-            logger.info(
-                f"✅ SUCCESS: Processamento concluído com sucesso! | "
-                f"Total duration: {total_duration:.2f}s | task_id={task_id}"
-            )
-            logger.info("=" * 80)
+            cod5_log("task.complete", task_id=task_id, total_duration_s=total_duration)
             
             # Webhook (opcional)
             webhook_url = params.get('webhook_url')
             if webhook_url:
-                # Valida que webhook_url seja uma string válida e uma URL válida
-                if isinstance(webhook_url, str) and webhook_url.strip() and webhook_url.lower() != 'string':
-                    try:
-                        from urllib.parse import urlparse
-                        parsed = urlparse(webhook_url.strip())
-                        if not parsed.scheme or not parsed.netloc:
-                            logger.warning(f"⚠️  WEBHOOK: URL inválida ignorada | URL: {webhook_url} | task_id={task_id}")
-                        else:
-                            try:
-                                import requests
-                                status = status_manager.get(task_id)
-                                logger.info(f"📡 WEBHOOK: Enviando webhook | URL: {webhook_url} | task_id={task_id}")
-                                response = requests.post(
-                                    webhook_url.strip(),
-                                    json=status.to_dict() if status else {},
-                                    timeout=10
-                                )
-                                logger.info(f"✅ WEBHOOK: Webhook enviado | Status: {response.status_code} | task_id={task_id}")
-                            except Exception as e:
-                                logger.error(f"❌ WEBHOOK: Erro ao chamar webhook | URL: {webhook_url} | Erro: {e} | task_id={task_id}")
-                    except Exception as e:
-                        logger.warning(f"⚠️  WEBHOOK: Erro ao validar URL | URL: {webhook_url} | Erro: {e} | task_id={task_id}")
-                else:
-                    logger.warning(f"⚠️  WEBHOOK: URL inválida ou vazia ignorada | URL: {webhook_url} | task_id={task_id}")
+                webhook_status_code = None
+                webhook_error = None
+                try:
+                    from urllib.parse import urlparse
+                    import requests
+                    parsed = urlparse(webhook_url.strip())
+                    if parsed.scheme and parsed.netloc:
+                        status = status_manager.get(task_id)
+                        cod5_log("webhook.post", task_id=task_id, url=webhook_url)
+                        response = requests.post(
+                            webhook_url.strip(),
+                            json=status.to_dict() if status else {},
+                            timeout=10
+                        )
+                        webhook_status_code = response.status_code
+                        cod5_log("webhook.post_done", task_id=task_id, url=webhook_url, status=webhook_status_code)
+                    else:
+                        webhook_error = "invalid_url"
+                        cod5_log("webhook.post_error", task_id=task_id, url=webhook_url, error="invalid_url")
+                except Exception as e:
+                    webhook_error = str(e)
+                    cod5_log("webhook.post_error", task_id=task_id, url=webhook_url, error=webhook_error)
+                
+                # Salva status do webhook no status da task
+                status_manager.update(
+                    task_id,
+                    webhook_status=webhook_status_code,
+                    webhook_error=webhook_error
+                )
             
             return {
                 "success": True,
@@ -555,11 +541,8 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
             
     except Exception as e:
         total_duration = time.time() - start_time if 'start_time' in locals() else 0
-        logger.error("=" * 80)
-        logger.error(f"❌ ERROR: Erro no processamento | task_id={task_id} | Duration: {total_duration:.2f}s")
-        logger.error(f"   Exception: {type(e).__name__} | {str(e)}")
-        logger.exception("   Stack trace completo:")
-        logger.error("=" * 80)
+        cod5_log("task.error", task_id=task_id, error=str(e), error_type=type(e).__name__, duration_s=total_duration)
+        logger.exception("Stack trace completo")
         
         status_manager.update(
             task_id,
@@ -572,24 +555,36 @@ def process_video(task_id: str, spaces_key: str, params: Dict[str, Any]) -> Dict
         
         # Webhook de erro (opcional)
         webhook_url = params.get('webhook_url')
-        if webhook_url and isinstance(webhook_url, str) and webhook_url.strip() and webhook_url.lower() != 'string':
+        if webhook_url:
+            webhook_status_code = None
+            webhook_error = None
             try:
                 from urllib.parse import urlparse
+                import requests
                 parsed = urlparse(webhook_url.strip())
                 if parsed.scheme and parsed.netloc:
-                    try:
-                        import requests
-                        status = status_manager.get(task_id)
-                        logger.info(f"📡 WEBHOOK: Enviando webhook de erro | URL: {webhook_url} | task_id={task_id}")
-                        requests.post(
-                            webhook_url.strip(),
-                            json=status.to_dict() if status else {},
-                            timeout=10
-                        )
-                    except Exception as e:
-                        logger.error(f"❌ WEBHOOK: Erro ao chamar webhook de erro | Erro: {e} | task_id={task_id}")
-            except Exception:
-                pass
+                    status = status_manager.get(task_id)
+                    cod5_log("webhook.post_error", task_id=task_id, url=webhook_url, is_error_webhook=True)
+                    response = requests.post(
+                        webhook_url.strip(),
+                        json=status.to_dict() if status else {},
+                        timeout=10
+                    )
+                    webhook_status_code = response.status_code
+                    cod5_log("webhook.post_done", task_id=task_id, url=webhook_url, status=webhook_status_code)
+                else:
+                    webhook_error = "invalid_url"
+            except Exception as we:
+                webhook_error = str(we)
+                cod5_log("webhook.post_error", task_id=task_id, url=webhook_url, error=webhook_error)
+            
+            # Salva status do webhook no status da task
+            if webhook_status_code or webhook_error:
+                status_manager.update(
+                    task_id,
+                    webhook_status=webhook_status_code,
+                    webhook_error=webhook_error
+                )
         
         raise
 

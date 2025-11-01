@@ -338,12 +338,210 @@ cod5-watermark-worker/
 └── storage.json                # cache leve de status
 ```
 
+## 📖 Parâmetros Detalhados
+
+### Parâmetros de Upload
+
+#### `override_conf` (opcional, 0.05–0.8)
+**O que faz:** Ajusta o threshold de confiança do detector YOLO. Valores menores detectam mais objetos (incluindo possíveis ruídos), valores maiores exigem maior certeza.
+
+**Quando usar:**
+- **Menor (0.05–0.2):** Marca d'água muito sutil, logo pequeno, vídeos com baixa qualidade.
+- **Padrão (0.25):** Maioria dos casos — bom equilíbrio.
+- **Maior (0.4–0.8):** Marca d'água bem visível, logs grandes, máxima precisão.
+
+**Efeitos colaterais:** Valores muito baixos podem detectar falhas de compressão como marcas; valores muito altos podem perder marcas pequenas ou parcialmente transparentes.
+
+#### `override_mask_expand` (opcional, 0–128 pixels)
+**O que faz:** Expande a região detectada em pixels antes do inpainting, garantindo que bordas da marca também sejam removidas.
+
+**Quando usar:**
+- **Menor (0–10):** Marcas com bordas bem definidas, logo pequeno, vídeo HD+.
+- **Padrão (18):** Maioria dos casos.
+- **Maior (30–128):** Marcas com sombras/efeitos, logos grandes com blur, máxima cobertura.
+
+**Efeitos colaterais:** Valores muito grandes podem remover conteúdo legítimo próximo à marca (por exemplo, texto ou objetos adjacentes).
+
+#### `override_frame_stride` (opcional, ≥1)
+**O que faz:** Processa apenas 1 a cada N frames. O inpainting é interpolado entre frames processados.
+
+**Quando usar:**
+- **1 (padrão):** Melhor qualidade, remove todas as marcas — recomendado para produção.
+- **2–3:** Vídeos longos, menor custo computacional, pequena perda de precisão.
+- **4+:** Apenas testes rápidos — qualidade reduzida significativamente.
+
+**Efeitos colaterais:** Valores >1 causam "tearing" em marcas que se movem entre frames, marcas parciais ou "fantasma" em transições rápidas.
+
+#### `webhook_url` (opcional, URL completa)
+**O que faz:** Envia POST com o status completo quando a tarefa finaliza (sucesso ou erro).
+
+**Quando usar:**
+- Integrações n8n, Zapier, Make.com.
+- Notificações externas (Slack, Discord, email).
+- Workflows automatizados.
+
+**Payload de sucesso:**
+```json
+{
+  "task_id": "cod5_1730389012",
+  "status": "completed",
+  "spaces_output": "https://...",
+  "progress": 100,
+  ...
+}
+```
+
+**Payload de erro:**
+```json
+{
+  "task_id": "cod5_1730389012",
+  "status": "error",
+  "error_detail": "Mensagem descritiva",
+  ...
+}
+```
+
+**Efeitos colaterais:** Webhook falhando não afeta o processamento, mas o status HTTP e erro são registrados nos logs e no status da tarefa.
+
+### Variáveis de Ambiente
+
+#### `TORCH_DEVICE` (cpu|mps|cuda)
+**O que faz:** Acelera processamento com hardware dedicado.
+
+**Quando usar:**
+- **mps:** macOS com Apple Silicon (M1+) — **recomendado**.
+- **cuda:** Linux/Windows com GPU NVIDIA RTX — **muito rápido**.
+- **cpu:** Fallback ou máquinas sem GPU — mais lento.
+
+**Nota:** O sistema detecta automaticamente se o device está disponível e ajusta para CPU se necessário.
+
+#### `FRAME_STRIDE` (≥1, default: 1)
+**Valor global** aplicado quando `override_frame_stride` não é fornecido. Mesmas regras acima.
+
+#### `MASK_EXPAND` (≥0, default: 18)
+**Valor global** aplicado quando `override_mask_expand` não é fornecido. Mesmas regras acima.
+
+---
+
+## 📊 Logs e Observabilidade
+
+### Formato de Log
+
+Os logs são emitidos em **JSON line** para facilitar parsing e filtragem:
+
+```json
+{"evt": "task.start", "timestamp": "2025-01-31T10:30:00Z", "task_id": "cod5_123"}
+{"evt": "env.device", "timestamp": "...", "requested": "mps", "effective": "cpu", "ultralytics_version": "8.3.223"}
+{"evt": "task.params", "timestamp": "...", "task_id": "cod5_123", "params_effective": {...}}
+{"evt": "task.complete", "timestamp": "...", "task_id": "cod5_123", "total_duration_s": 33.5}
+{"evt": "webhook.post_done", "timestamp": "...", "task_id": "cod5_123", "url": "...", "status": 200}
+```
+
+### Eventos Principais
+
+| Evento | Descrição |
+|--------|-----------|
+| `task.start` | Início do processamento |
+| `env.device` | Device PyTorch efetivo (com fallback) |
+| `task.params` | Parâmetros aplicados (com defaults) |
+| `task.download_done` | Vídeo baixado do Spaces |
+| `task.extract_done` | Frames extraídos |
+| `task.detect_done` | Marcas detectadas |
+| `task.inpaint_done` | Inpainting concluído |
+| `render.done` | Vídeo renderizado |
+| `spaces.output` | Upload final concluído |
+| `task.complete` | Processamento finalizado |
+| `task.error` | Erro no processamento |
+| `webhook.post` | Webhook sendo enviado |
+| `webhook.post_done` | Webhook recebido |
+| `webhook.post_error` | Falha no webhook |
+
+### Filtrando Logs
+
+**jq** (linha de comando):
+```bash
+docker logs container_name 2>&1 | jq 'select(.evt=="task.complete")'
+docker logs container_name 2>&1 | jq 'select(.task_id=="cod5_123")'
+```
+
+**Loki/Grafana:** Configure parser JSON e use queries como `{evt="task.complete"}`.
+
+---
+
+## 🔧 Troubleshooting
+
+### Status sempre "queued"
+
+**Sintoma:** `/get_results` retorna `queued` mesmo após processamento completo.
+
+**Causa:** Redis não configurado ou falha na conexão. Worker atualiza status em memória/arquivo local, mas API lê de outro local.
+
+**Solução:** Configure `QUEUE_BACKEND=redis://...` e verifique logs de inicialização:
+```
+STATUS_BACKEND: Redis conectado com sucesso
+```
+Se não aparecer, o sistema usará fallback automático para `storage.json` (funciona, mas com limitações em multi-container).
+
+### Erro 422: "override_frame_stride" inválido
+
+**Sintoma:** Upload rejeitado com `422 Unprocessable Entity`.
+
+**Causa:** Valor fora da faixa válida (ex.: `0`, negativo, `>10`, não-numérico).
+
+**Solução:** Envie valores entre `1` e `10` (recomendado: `1`).
+
+### Webhook não é chamado
+
+**Sintoma:** `webhook_status` retorna `None` ou mostra erro.
+
+**Possíveis causas:**
+1. **URL inválida:** verifique sintaxe (deve ter `http://` ou `https://`).
+2. **Timeout (10s):** servidor está lento ou inacessível.
+3. **CORS:** servidor não aceita requests do worker.
+
+**Solução:** Consulte `webhook_error` no status ou logs:
+```bash
+curl http://seu-dominio/get_results?task_id=cod5_123 | jq '.webhook_error'
+```
+
+### Processamento muito lento
+
+**Sintoma:** Vídeos demoram minutos para processar.
+
+**Causas e soluções:**
+1. **CPU único:** configure `TORCH_DEVICE=cpu` (ou `cuda`/`mps` se disponível).
+2. **Frames excessivos:** use `FRAME_STRIDE=2` ou `3`.
+3. **Recursos insuficientes:** aumente CPU/RAM no container.
+
+### Marca d'água não removida
+
+**Sintoma:** Vídeo processado ainda mostra logo.
+
+**Possíveis causas:**
+1. **Modelo YOLO não detectou:** diminua `override_conf`.
+2. **Área insuficiente:** aumente `override_mask_expand`.
+3. **Marca animada:** use `FRAME_STRIDE=1` (padrão).
+4. **Modelo incompatível:** verifique versão Ultralytics e logs de carregamento.
+
+**Solução:** Teste com múltiplos valores de `conf` e `mask_expand` em vídeos curtos.
+
+### Erro C3k2 no startup
+
+**Sintoma:** `ERRO DE COMPATIBILIDADE C3k2` ao iniciar.
+
+**Causa:** Versão incompatível do Ultralytics ou modelo requer código específico não presente.
+
+**Solução:** O Dockerfile testa múltiplas versões automaticamente. Se persistir, verifique logs de build.
+
+---
+
 ## 🔚 Observações Finais
 
 - Em **Apple Silicon**, `TORCH_DEVICE=mps` acelera bastante (PyTorch já suporta MPS).
 - Para vídeos muito longos, use `FRAME_STRIDE=2` para acelerar (com pequena perda de fidelidade).
 - Se houver `@username` além da logo Sora, considere treinar/estender YOLO (dataset do próprio repo) — ou aumentar `MASK_EXPAND`.
 - Para **webhook** ao terminar, passe `webhook_url` no upload (útil no n8n).
+- Use **Redis** para produção multi-container — garante consistência de status entre workers.
 
 ## 📄 Licença
 

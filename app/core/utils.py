@@ -1,5 +1,7 @@
 """Utilitários gerais."""
 import os
+import json
+import logging
 import time
 import uuid
 import re
@@ -8,6 +10,10 @@ from pathlib import Path
 from fastapi import UploadFile, HTTPException
 
 from .config import settings
+
+# Logger para logs estruturados
+cod5_logger = logging.getLogger("cod5")
+cod5_logger.setLevel(logging.INFO)
 
 
 def generate_task_id() -> str:
@@ -75,4 +81,23 @@ def get_timestamp() -> str:
     """Retorna timestamp ISO 8601."""
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
+
+
+def cod5_log(evt: str, **data):
+    """
+    Emite log estruturado em formato JSON line.
+    
+    Args:
+        evt: Nome do evento (ex: "task.start", "webhook.post")
+        **data: Dados adicionais do evento
+    
+    Exemplo:
+        cod5_log("task.start", task_id="cod5_123", device="cpu", model="YOLOv11s")
+    """
+    log_entry = {
+        "evt": evt,
+        "timestamp": get_timestamp(),
+        **data
+    }
+    cod5_logger.info(json.dumps(log_entry))
 
