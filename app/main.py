@@ -268,6 +268,10 @@ async def submit_remove_task(
                         )
                     await tmp_file.write(chunk)
             
+            # Valida se arquivo não está vazio após leitura completa
+            if bytes_written == 0:
+                raise HTTPException(status_code=400, detail="Arquivo vazio ou não foi possível ler o arquivo")
+            
             logger.info(f"✅ UPLOAD_STREAM: Arquivo salvo com sucesso | Tamanho: {bytes_written / (1024 * 1024):.2f}MB | task_id={task_id}")
         except HTTPException:
             # Remove arquivo parcial se excedeu limite

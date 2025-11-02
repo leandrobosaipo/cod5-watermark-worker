@@ -35,9 +35,20 @@ def sanitize_filename(filename: str) -> str:
 
 
 def validate_file_size(file: UploadFile) -> None:
-    """Valida tamanho do arquivo."""
-    if not file.size:
-        raise HTTPException(status_code=400, detail="Arquivo vazio ou tamanho desconhecido")
+    """
+    Valida tamanho do arquivo.
+    
+    Nota: Para uploads streaming, file.size pode ser None.
+    Nesse caso, a validação de tamanho será feita durante o streaming.
+    """
+    # Para uploads streaming, file.size pode ser None
+    # Não falhamos aqui - a validação real será feita durante o streaming
+    if file.size is None:
+        return  # Tamanho será validado durante a leitura do arquivo
+    
+    # Valida apenas se file.size estiver disponível
+    if file.size == 0:
+        raise HTTPException(status_code=400, detail="Arquivo vazio")
     
     max_bytes = settings.MAX_FILE_MB * 1024 * 1024
     if file.size > max_bytes:
