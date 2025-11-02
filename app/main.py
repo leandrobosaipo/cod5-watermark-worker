@@ -253,7 +253,11 @@ async def submit_remove_task(
         
         try:
             async with aiofiles.open(tmp_path, 'wb') as tmp_file:
-                async for chunk in file.stream():
+                chunk_size = 1024 * 1024  # 1MB por chunk
+                while True:
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
                     bytes_written += len(chunk)
                     # Valida tamanho durante streaming
                     if bytes_written > max_bytes:
